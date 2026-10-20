@@ -48,3 +48,17 @@ def test_read_negative_offset_is_rejected():
     p = Partition("login")
     with pytest.raises(ValueError):
         p.read(-1)
+
+
+def test_duplicate_msg_id_is_stored_once():
+    p = Partition("login")
+    assert p.append(make_line(0)) == 0
+    assert p.append(make_line(1)) == 1
+    assert p.append(make_line(0)) == 0
+    assert len(p) == 2
+
+
+def test_line_without_msg_id_is_rejected():
+    p = Partition("login")
+    with pytest.raises(KeyError):
+        p.append({"service": "login", "level": "INFO", "text": "no id", "ts": 0.0})
