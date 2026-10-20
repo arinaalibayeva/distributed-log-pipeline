@@ -25,6 +25,7 @@ def test_read_returns_lines_in_order():
     p = Partition("login")
     for n in range(3):
         p.append(make_line(n))
+    p.commit(2)
     entries = p.read()
     assert [e["offset"] for e in entries] == [0, 1, 2]
     assert [e["line"]["msg_id"] for e in entries] == ["id-0", "id-1", "id-2"]
@@ -34,12 +35,14 @@ def test_read_from_offset_skips_earlier_lines():
     p = Partition("login")
     for n in range(5):
         p.append(make_line(n))
+    p.commit(4)
     assert [e["offset"] for e in p.read(3)] == [3, 4]
 
 
 def test_read_past_end_returns_nothing():
     p = Partition("login")
     p.append(make_line(0))
+    p.commit(0)
     assert p.read(1) == []
     assert p.read(10) == []
 
@@ -62,3 +65,37 @@ def test_line_without_msg_id_is_rejected():
     p = Partition("login")
     with pytest.raises(KeyError):
         p.append({"service": "login", "level": "INFO", "text": "no id", "ts": 0.0})
+
+
+def test_uncommitted_lines_are_not_read():
+    p = Partition("login")
+    for n in range(3):
+        p.append(make_line(n))
+    assert p.read() == []
+    p.commit(1)
+    assert [e["offset"] for e in p.read()] == [0, 1]
+
+
+def test_read_uncommitted_returns_everything_stored():
+    p = Partition("login")
+    for n in range(3):
+        p.append(make_line(n))
+    p.commit(0)
+    assert [e["offset"] for e in p.read_uncommitted()] == [0, 1, 2]
+    assert [e["offset"] for e in p.read_uncommitted(1)] == [1, 2]
+
+
+def test_commit_index_never_moves_backwards():
+    p = Partition("login")
+    for n in range(3):
+        p.append(make_line(n))
+    p.commit(2)
+    p.commit(0)
+    assert p.commit_index == 2
+
+
+def test_commit_past_end_is_rejected():
+    p = Partition("login")
+    p.append(make_line(0))
+    with pytest.raises(ValueError):
+        p.commit(1)
