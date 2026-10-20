@@ -1,6 +1,6 @@
 import pytest
 
-from broker.partition import Partition
+from broker.partition import Partition, StaleEpochError
 
 
 def make_line(n):
@@ -99,3 +99,54 @@ def test_commit_past_end_is_rejected():
     p.append(make_line(0))
     with pytest.raises(ValueError):
         p.commit(1)
+
+
+def test_entries_record_their_epoch():
+    p = Partition("login")
+    p.append(make_line(0))
+    p.append(make_line(1), epoch=2)
+    p.commit(1)
+    assert [e["epoch"] for e in p.read()] == [0, 2]
+    assert p.epoch == 2
+
+
+def test_append_from_older_epoch_is_rejected():
+    p = Partition("login")
+    p.set_epoch(3)
+    with pytest.raises(StaleEpochError):
+        p.append(make_line(0), epoch=2)
+    assert len(p) == 0
+
+
+def test_epoch_never_moves_backwards():
+    p = Partition("login")
+    p.set_epoch(3)
+    with pytest.raises(StaleEpochError):
+        p.set_epoch(1)
+    assert p.epoch == 3
+
+
+def test_truncate_drops_uncommitted_lines():
+    p = Partition("login")
+    for n in range(5):
+        p.append(make_line(n))
+    p.commit(1)
+    assert p.truncate_to_commit() == 3
+    assert [e["offset"] for e in p.read_uncommitted()] == [0, 1]
+
+
+def test_truncated_msg_id_can_be_stored_again():
+    p = Partition("login")
+    p.append(make_line(0))
+    p.append(make_line(1))
+    p.commit(0)
+    p.truncate_to_commit()
+    assert p.append(make_line(1)) == 1
+    assert len(p) == 2
+
+
+def test_truncate_with_nothing_committed_empties_the_log():
+    p = Partition("login")
+    p.append(make_line(0))
+    assert p.truncate_to_commit() == 1
+    assert len(p) == 0
