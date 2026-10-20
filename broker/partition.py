@@ -91,3 +91,17 @@ class Partition:
         if start < 0:
             raise ValueError("start must be 0 or greater")
         return self.entries[start:]
+
+
+def commit_index_from_lengths(lengths):
+    """Return the highest offset stored on a majority of replicas.
+
+    `lengths` holds the log length of every replica, the leader included.
+    With three replicas this is the second-highest length minus one, because
+    that offset is on at least two brokers. Returns -1 if no offset is on a
+    majority yet.
+    """
+    if not lengths:
+        raise ValueError("need at least one replica")
+    majority = len(lengths) // 2 + 1
+    return sorted(lengths, reverse=True)[majority - 1] - 1

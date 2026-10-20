@@ -1,6 +1,6 @@
 import pytest
 
-from broker.partition import Partition, StaleEpochError
+from broker.partition import Partition, StaleEpochError, commit_index_from_lengths
 
 
 def make_line(n):
@@ -150,3 +150,21 @@ def test_truncate_with_nothing_committed_empties_the_log():
     p.append(make_line(0))
     assert p.truncate_to_commit() == 1
     assert len(p) == 0
+
+
+def test_commit_index_is_second_highest_length_of_three():
+    assert commit_index_from_lengths([5, 3, 1]) == 2
+    assert commit_index_from_lengths([1, 5, 3]) == 2
+
+
+def test_commit_index_when_two_replicas_are_level():
+    assert commit_index_from_lengths([4, 4, 0]) == 3
+
+
+def test_commit_index_with_only_leader_ahead_is_nothing():
+    assert commit_index_from_lengths([3, 0, 0]) == -1
+
+
+def test_commit_index_needs_a_replica():
+    with pytest.raises(ValueError):
+        commit_index_from_lengths([])
