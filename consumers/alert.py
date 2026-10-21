@@ -16,15 +16,16 @@ class AlertDetector:
         self.window = window
         self.seen = set()  # msg_ids of ERROR lines already counted
         self.errors = {}  # service -> sorted list of ERROR timestamps
-        self.last_alert = {}  # service -> end time of its most recent alert
+        self.alerts = {}  # service -> sorted list of end times of its alerts
 
     def process(self, line):
         """Count one log line and return an alert if it completes a burst.
 
         Returns None for non-ERROR lines, for lines already counted (same
-        msg_id), and for bursts that a recent alert already covers. A service
-        gets at most one alert per `window` seconds, so a fourth error in the
-        same burst doesn't alert again.
+        msg_id), and for bursts that an earlier alert already covers. A
+        service gets at most one alert per `window` seconds, so a fourth error
+        in the same burst doesn't alert again, and neither does a late error
+        that belongs to a burst that already alerted.
         """
         if line["level"] != "ERROR" or line["msg_id"] in self.seen:
             return None
@@ -33,19 +34,16 @@ class AlertDetector:
         service = line["service"]
         times = self.errors.setdefault(service, [])
         insort(times, line["ts"])
+        alerted = self.alerts.setdefault(service, [])
 
-        burst = self._find_burst(times, line["ts"])
-        if burst is None:
-            return None
-        start, end, count = burst
-        last = self.last_alert.get(service)
-        if last is not None and abs(end - last) <= self.window:
-            return None
-        self.last_alert[service] = end
-        return {"service": service, "count": count, "start": start, "end": end}
+        for start, end, count in self._bursts_including(times, line["ts"]):
+            if not self._near_alert(alerted, end):
+                insort(alerted, end)
+                return {"service": service, "count": count, "start": start, "end": end}
+        return None
 
-    def _find_burst(self, times, ts):
-        """Return (start, end, count) for a burst that includes `ts`, or None.
+    def _bursts_including(self, times, ts):
+        """Yield (start, end, count) for every burst that includes `ts`.
 
         Every window that contains `ts` starts at a stored timestamp between
         ts - window and ts, so only those starts need checking.
@@ -56,5 +54,9 @@ class AlertDetector:
             end_index = bisect_right(times, times[i] + self.window)
             count = end_index - i
             if count >= self.threshold:
-                return times[i], times[end_index - 1], count
-        return None
+                yield times[i], times[end_index - 1], count
+
+    def _near_alert(self, alerted, end):
+        """Return True if an earlier alert ended within `window` of `end`."""
+        i = bisect_left(alerted, end - self.window)
+        return i < len(alerted) and alerted[i] <= end + self.window

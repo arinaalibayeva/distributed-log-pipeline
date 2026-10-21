@@ -98,3 +98,18 @@ def test_threshold_and_window_can_be_changed():
     d = AlertDetector(threshold=2, window=1.0)
     assert feed(d, [make_line(0, 10), make_line(1, 12)]) == []
     assert len(feed(d, [make_line(2, 12.5)])) == 1
+
+
+def test_late_line_from_an_old_burst_does_not_alert_again():
+    d = AlertDetector()
+    lines = [make_line(n, ts) for n, ts in enumerate([10, 11, 12, 30, 31, 32])]
+    assert len(feed(d, lines)) == 2
+    assert feed(d, [make_line(99, 11.5)]) == []
+
+
+def test_line_in_two_bursts_alerts_for_the_one_not_yet_covered():
+    d = AlertDetector()
+    assert len(feed(d, [make_line(0, 10), make_line(1, 11), make_line(2, 12)])) == 1
+    assert feed(d, [make_line(3, 19), make_line(4, 20)]) == []
+    alerts = feed(d, [make_line(5, 15)])
+    assert alerts == [{"service": "login", "count": 3, "start": 15.0, "end": 20.0}]
