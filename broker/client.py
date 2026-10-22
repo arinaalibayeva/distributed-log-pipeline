@@ -4,6 +4,8 @@ Producers and consumers use this so they don't have to know who the leader
 is. The client remembers its best guess for each partition's leader. If a
 broker answers "not leader", the client switches to the broker it names; if a
 broker can't be reached, the client tries the next one in preference order.
+If the leader answers that it can't commit right now (503), the client gives
+up at once: no other broker can help, and the caller should retry later.
 """
 
 import httpx
@@ -16,7 +18,9 @@ class NoLeaderAvailable(Exception):
 
 
 class ClusterClient:
-    def __init__(self, http=None, brokers=config.BROKERS, preference=config.PREFERENCE, timeout=1.0):
+    # The timeout must be longer than the broker's ack_timeout, or a slow
+    # commit would look like a dead broker.
+    def __init__(self, http=None, brokers=config.BROKERS, preference=config.PREFERENCE, timeout=3.0):
         self.http = http or httpx.Client(timeout=timeout)
         self.brokers = brokers
         self.preference = preference
@@ -26,9 +30,10 @@ class ClusterClient:
         """Send a request to `partition`'s leader and return the JSON reply.
 
         `path` is relative to the broker's URL; extra keyword arguments go to
-        httpx (for example `json=` or `params=`). Raises NoLeaderAvailable once
-        every broker has been tried twice without success, which bounds the
-        number of redirects if brokers disagree about who leads.
+        httpx (for example `json=` or `params=`). Raises NoLeaderAvailable if
+        the leader can't commit right now, or once every broker has been
+        tried twice without success, which bounds the number of redirects if
+        brokers disagree about who leads.
         """
         for _ in range(2 * len(self.brokers)):
             broker = self.leader[partition]
@@ -40,6 +45,8 @@ class ClusterClient:
             if response.status_code == 421:
                 self.leader[partition] = response.json()["leader"]
                 continue
+            if response.status_code == 503:
+                raise NoLeaderAvailable(partition)
             if response.status_code >= 500:
                 self.leader[partition] = self._next_broker(partition, broker)
                 continue

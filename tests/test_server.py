@@ -1,26 +1,102 @@
+"""Endpoint tests for a single broker whose peers can't be reached.
+
+With no follower answering, nothing can be committed, which is what these
+tests rely on. Replication between live brokers is in test_replication.py.
+"""
+
+import time
+
 import pytest
 from fastapi.testclient import TestClient
 
 from broker.server import create_app
-from conftest import make_line
+from conftest import free_port, make_line
+
+
+def unreachable_brokers():
+    return {b: f"http://127.0.0.1:{free_port()}" for b in (1, 2, 3)}
 
 
 @pytest.fixture
 def broker1():
-    return TestClient(create_app(1))
+    with TestClient(create_app(1, brokers=unreachable_brokers(), interval=0.05, ack_timeout=0.1)) as client:
+        yield client
 
 
-def test_append_then_read(broker1):
-    assert broker1.post("/partitions/login/append", json=make_line(0)).json() == {"offset": 0}
-    assert broker1.post("/partitions/login/append", json=make_line(1)).json() == {"offset": 1}
-    reply = broker1.get("/partitions/login/read", params={"offset": 1}).json()
-    assert reply["commit_index"] == 1
-    assert [(e["offset"], e["line"]["msg_id"]) for e in reply["entries"]] == [(1, "login-1")]
+@pytest.fixture
+def broker2():
+    with TestClient(create_app(2, brokers=unreachable_brokers(), interval=0.05, ack_timeout=0.1)) as client:
+        yield client
 
 
-def test_retried_append_returns_same_offset(broker1):
+def replicate(client, start, entries, leader=1, epoch=0, commit_index=-1):
+    return client.post("/partitions/login/replicate", json={
+        "leader": leader, "epoch": epoch, "start": start, "entries": entries, "commit_index": commit_index,
+    })
+
+
+def entry(n):
+    return {"offset": n, "epoch": 0, "line": make_line(n)}
+
+
+def test_append_without_a_majority_is_not_acked(broker1):
+    started = time.monotonic()
+    reply = broker1.post("/partitions/login/append", json=make_line(0))
+    assert reply.status_code == 503
+    assert reply.json() == {"error": "not_committed", "partition": "login", "offset": 0}
+    assert time.monotonic() - started < 2
+
+
+def test_unacked_line_is_stored_once_and_not_readable(broker1):
     broker1.post("/partitions/login/append", json=make_line(0))
-    assert broker1.post("/partitions/login/append", json=make_line(0)).json() == {"offset": 0}
+    assert broker1.post("/partitions/login/append", json=make_line(0)).json()["offset"] == 0
+    assert broker1.post("/partitions/login/append", json=make_line(1)).json()["offset"] == 1
+    reply = broker1.get("/partitions/login/read").json()
+    assert reply == {"entries": [], "commit_index": -1}
+    assert broker1.get("/state").json()["partitions"]["login"]["length"] == 2
+
+
+def test_follower_accepts_replicated_entries(broker2):
+    reply = replicate(broker2, 0, [entry(0), entry(1)], commit_index=0)
+    assert reply.json() == {"accepted": True, "length": 2}
+    login = broker2.get("/state").json()["partitions"]["login"]
+    assert (login["role"], login["length"], login["commit_index"]) == ("follower", 2, 0)
+
+
+def test_follower_reports_length_on_gap(broker2):
+    replicate(broker2, 0, [entry(0)])
+    assert replicate(broker2, 3, [entry(3)]).json() == {"accepted": False, "length": 1}
+
+
+def test_follower_rejects_wrong_leader_and_stale_epoch(broker2):
+    assert replicate(broker2, 0, [], leader=3).status_code == 409
+    replicate(broker2, 0, [], epoch=2)
+    reply = replicate(broker2, 0, [], epoch=1)
+    assert reply.status_code == 409
+    assert reply.json()["error"] == "stale_epoch"
+
+
+def test_leader_rejects_replication_for_its_partition(broker1):
+    reply = replicate(broker1, 0, [entry(0)])
+    assert reply.status_code == 409
+    assert reply.json()["error"] == "not_follower"
+
+
+def test_replicate_with_bad_offsets_is_400(broker2):
+    assert replicate(broker2, 0, [entry(1)]).status_code == 400
+
+
+def test_replicate_conflicting_with_committed_entry_is_409(broker2):
+    replicate(broker2, 0, [entry(0)], commit_index=0)
+    other = {"offset": 0, "epoch": 0, "line": make_line(99)}
+    reply = replicate(broker2, 0, [other])
+    assert reply.status_code == 409
+    assert reply.json()["error"] == "conflict"
+
+
+def test_malformed_replicate_is_422(broker2):
+    assert broker2.post("/partitions/login/replicate", json={"leader": 1}).status_code == 422
+    assert replicate(broker2, -1, []).status_code == 422
 
 
 def test_follower_answers_421_with_leader(broker1):
@@ -51,8 +127,7 @@ def test_negative_offset_is_422(broker1):
 
 
 def test_state_endpoint(broker1):
-    broker1.post("/partitions/login/append", json=make_line(0))
     state = broker1.get("/state").json()
     assert state["broker_id"] == 1
-    assert state["partitions"]["login"]["length"] == 1
     assert set(state["partitions"]) == {"login", "search", "upload"}
+    assert state["partitions"]["login"]["follower_lengths"] == {"2": 0, "3": 0}

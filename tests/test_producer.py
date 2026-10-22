@@ -1,11 +1,11 @@
 import random
 
-from conftest import make_line
+from conftest import make_line, wait_until
 from producer.producer import LineGenerator, Producer
 
 
-def stored_ids(cluster, broker_id, partition):
-    return [e["line"]["msg_id"] for e in cluster.node(broker_id).read(partition, limit=1000)]
+def msg_ids(cluster, broker_id, partition):
+    return [e["line"]["msg_id"] for e in cluster.entries(broker_id, partition)]
 
 
 def test_generator_makes_valid_lines():
@@ -37,28 +37,54 @@ def test_flush_sends_lines_in_order(cluster):
     producer.add([make_line(n) for n in range(5)])
     assert producer.flush() is True
     assert producer.acked == 5
-    assert stored_ids(cluster, 1, "login") == [f"login-{n}" for n in range(5)]
+    assert msg_ids(cluster, 1, "login") == [f"login-{n}" for n in range(5)]
+
+
+def test_acked_lines_are_on_a_majority(cluster):
+    producer = Producer("login", cluster.client())
+    producer.add([make_line(n) for n in range(5)])
+    producer.flush()
+    copies = sum(len(cluster.entries(b, "login")) == 5 for b in (1, 2, 3))
+    assert copies >= 2
 
 
 def test_lines_stay_buffered_while_no_leader(cluster):
     producer = Producer("login", cluster.client())
-    cluster.down.add(1)
+    cluster.stop(1)
     producer.add([make_line(n) for n in range(3)])
     assert producer.flush() is False
     assert len(producer.pending) == 3
 
-    cluster.down.discard(1)
+    cluster.start(1)
     producer.add([make_line(3)])
     assert producer.flush() is True
-    assert stored_ids(cluster, 1, "login") == [f"login-{n}" for n in range(4)]
+    assert msg_ids(cluster, 1, "login") == [f"login-{n}" for n in range(4)]
+
+
+def test_lines_stay_buffered_without_a_majority(cluster):
+    producer = Producer("login", cluster.client())
+    cluster.stop(2)
+    cluster.stop(3)
+    producer.add([make_line(0), make_line(1)])
+    assert producer.flush() is False
+    assert producer.acked == 0
+    assert len(producer.pending) == 2
+
+    cluster.start(3)
+    assert producer.flush() is True
+    assert msg_ids(cluster, 1, "login") == ["login-0", "login-1"]
+    wait_until(lambda: msg_ids(cluster, 3, "login") == ["login-0", "login-1"], message="broker 3 to catch up")
 
 
 def test_lost_ack_is_retried_without_duplicate(cluster):
-    producer = Producer("login", cluster.client())
-    cluster.lose_replies[1] = 1
+    transport = cluster.transport()
+    producer = Producer("login", cluster.client(transport))
+    transport.lose_replies[1] = 1
     producer.add([make_line(0), make_line(1)])
     assert producer.flush() is True
-    assert stored_ids(cluster, 1, "login") == ["login-0", "login-1"]
+    wait_until(lambda: all(len(cluster.entries(b, "login")) == 2 for b in (1, 2, 3)), message="replication")
+    for b in (1, 2, 3):
+        assert msg_ids(cluster, b, "login") == ["login-0", "login-1"]
 
 
 def test_producer_finds_leader_from_wrong_guess(cluster):
@@ -67,4 +93,4 @@ def test_producer_finds_leader_from_wrong_guess(cluster):
     producer = Producer("upload", client)
     producer.add([make_line(0, service="upload")])
     assert producer.flush() is True
-    assert stored_ids(cluster, 3, "upload") == ["upload-0"]
+    assert msg_ids(cluster, 3, "upload") == ["upload-0"]
