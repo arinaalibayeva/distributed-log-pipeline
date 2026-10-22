@@ -1,6 +1,6 @@
 import pytest
 
-from broker.partition import Partition, StaleEpochError, commit_index_from_lengths
+from broker.partition import ConflictError, GapError, Partition, StaleEpochError, commit_index_from_lengths
 
 
 def make_line(n):
@@ -168,3 +168,135 @@ def test_commit_index_with_only_leader_ahead_is_nothing():
 def test_commit_index_needs_a_replica():
     with pytest.raises(ValueError):
         commit_index_from_lengths([])
+
+
+def make_entry(n, offset=None, epoch=0, msg=None):
+    line = make_line(n)
+    if msg is not None:
+        line["msg_id"] = msg
+    return {"offset": n if offset is None else offset, "epoch": epoch, "line": line}
+
+
+def test_replicate_stores_entries_at_leader_offsets():
+    p = Partition("login")
+    assert p.replicate(0, [make_entry(0), make_entry(1)], epoch=0) == 2
+    assert p.replicate(2, [make_entry(2)], epoch=0, prev_msg_id="id-1") == 3
+    assert [e["offset"] for e in p.read_uncommitted()] == [0, 1, 2]
+    assert p.commit_index == -1
+
+
+def test_replicate_keeps_the_leaders_epoch_on_each_entry():
+    p = Partition("login")
+    p.replicate(0, [make_entry(0, epoch=1), make_entry(1, epoch=2)], epoch=2)
+    assert [e["epoch"] for e in p.read_uncommitted()] == [1, 2]
+    assert p.epoch == 2
+
+
+def test_replicate_with_a_gap_is_rejected():
+    p = Partition("login")
+    p.replicate(0, [make_entry(0)], epoch=0)
+    with pytest.raises(GapError):
+        p.replicate(2, [make_entry(2)], epoch=0)
+    assert len(p) == 1
+
+
+def test_replicate_skips_entries_it_already_has():
+    p = Partition("login")
+    p.replicate(0, [make_entry(0), make_entry(1)], epoch=0)
+    assert p.replicate(0, [make_entry(0), make_entry(1), make_entry(2)], epoch=0) == 3
+    assert [e["line"]["msg_id"] for e in p.read_uncommitted()] == ["id-0", "id-1", "id-2"]
+
+
+def test_empty_replicate_is_a_heartbeat():
+    p = Partition("login")
+    p.replicate(0, [make_entry(0)], epoch=0)
+    assert p.replicate(1, [], epoch=0, prev_msg_id="id-0") == 1
+    assert p.replicate(0, [], epoch=0) == 1
+
+
+def test_replicate_replaces_conflicting_uncommitted_entries():
+    p = Partition("login")
+    p.replicate(0, [make_entry(0), make_entry(1, msg="old-1"), make_entry(2, msg="old-2")], epoch=0)
+    p.commit(0)
+    assert p.replicate(1, [make_entry(1, msg="new-1")], epoch=1, prev_msg_id="id-0") == 2
+    assert [e["line"]["msg_id"] for e in p.read_uncommitted()] == ["id-0", "new-1"]
+    assert "old-2" not in p.msg_ids
+    assert p.append(make_line(0) | {"msg_id": "old-2"}, epoch=1) == 2
+
+
+def test_replicate_never_changes_committed_entries():
+    p = Partition("login")
+    p.replicate(0, [make_entry(0), make_entry(1)], epoch=0)
+    p.commit(1)
+    with pytest.raises(ConflictError):
+        p.replicate(1, [make_entry(1, msg="other"), make_entry(2)], epoch=0, prev_msg_id="id-0")
+    assert [e["line"]["msg_id"] for e in p.read_uncommitted()] == ["id-0", "id-1"]
+
+
+def test_replicate_from_older_epoch_is_rejected():
+    p = Partition("login")
+    p.set_epoch(2)
+    with pytest.raises(StaleEpochError):
+        p.replicate(0, [make_entry(0)], epoch=1)
+    assert len(p) == 0
+
+
+def test_replicate_needs_consecutive_offsets():
+    p = Partition("login")
+    with pytest.raises(ValueError):
+        p.replicate(0, [make_entry(0), make_entry(2)], epoch=0)
+    with pytest.raises(ValueError):
+        p.replicate(1, [make_entry(0)], epoch=0)
+    assert len(p) == 0
+
+
+def test_replicated_msg_ids_reject_duplicate_appends():
+    p = Partition("login")
+    p.replicate(0, [make_entry(0)], epoch=0)
+    assert p.append(make_line(0)) == 0
+    assert len(p) == 1
+
+
+def test_follow_commit_is_capped_at_the_end_of_the_log():
+    p = Partition("login")
+    p.replicate(0, [make_entry(0), make_entry(1)], epoch=0)
+    p.follow_commit(10)
+    assert p.commit_index == 1
+
+
+def test_follow_commit_never_moves_backwards():
+    p = Partition("login")
+    p.replicate(0, [make_entry(0), make_entry(1)], epoch=0)
+    p.follow_commit(1)
+    p.follow_commit(0)
+    assert p.commit_index == 1
+
+
+def test_follow_commit_on_empty_log_does_nothing():
+    p = Partition("login")
+    p.follow_commit(5)
+    assert p.commit_index == -1
+
+
+def test_replicate_checks_the_entry_before_start():
+    p = Partition("login")
+    p.replicate(0, [make_entry(0), make_entry(1)], epoch=0)
+    with pytest.raises(GapError):
+        p.replicate(2, [make_entry(2)], epoch=0, prev_msg_id="someone-else")
+    with pytest.raises(GapError):
+        p.replicate(2, [make_entry(2)], epoch=0)
+    assert len(p) == 2
+
+
+def test_heartbeat_with_mismatched_previous_entry_is_rejected():
+    p = Partition("login")
+    p.replicate(0, [make_entry(0)], epoch=0)
+    with pytest.raises(GapError):
+        p.replicate(1, [], epoch=0, prev_msg_id="other-0")
+
+
+def test_follow_commit_stops_at_the_verified_end():
+    p = Partition("login")
+    p.replicate(0, [make_entry(0), make_entry(1), make_entry(2)], epoch=0)
+    p.follow_commit(10, verified_end=0)
+    assert p.commit_index == 0
