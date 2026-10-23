@@ -220,7 +220,7 @@ def test_follower_with_different_history_never_commits_leaders_lines():
     follower.replicate("login", 1, 0, 0, [{"offset": 0, "epoch": 0, "line": make_line(7)}], 0)
     restarted_leader = BrokerNode(1)
     restarted_leader.append("login", make_line(0))
-    heartbeat = {"start": 0, "entries": []}
+    heartbeat = {"epoch": 0, "start": 0, "entries": []}
     accepted, length = follower.replicate("login", 1, 0, 0, [], -1)
     restarted_leader.record_reply("login", 2, heartbeat, accepted, length)
     assert restarted_leader.partitions["login"].commit_index == -1
