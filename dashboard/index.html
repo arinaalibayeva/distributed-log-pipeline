@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Log Pipeline</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #6b7280; --line: #e3e6eb;
+    --leader: #2563eb; --ok: #16a34a; --warn: #d97706; --bad: #dc2626;
+    --warn-bg: #fef3c7; --bad-bg: #fee2e2; --down-bg: #eef0f3;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --panel: #1b2029; --text: #e6e9ef; --muted: #8b93a3; --line: #2a303c;
+      --leader: #60a5fa; --ok: #4ade80; --warn: #fbbf24; --bad: #f87171;
+      --warn-bg: #3a2e12; --bad-bg: #3b1a1a; --down-bg: #171a21;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 24px 16px; }
+  header { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  h1 { font-size: 20px; margin: 0; }
+  .muted { color: var(--muted); }
+  .contents { display: contents; }
+  .grid { display: grid; grid-template-columns: 90px repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 20px; }
+  .head, .cell, .rowname { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
+  .head { display: flex; flex-direction: column; gap: 6px; }
+  .head .title { display: flex; justify-content: space-between; align-items: center; font-weight: 600; }
+  .rowname { font-weight: 600; display: flex; flex-direction: column; justify-content: center; gap: 4px; }
+  .rowname .note { font-weight: 400; font-size: 12px; }
+  .pill { font-size: 12px; font-weight: 600; padding: 1px 8px; border-radius: 999px; }
+  .up { color: var(--ok); } .down { color: var(--bad); }
+  .buttons { display: flex; gap: 6px; }
+  button { font: inherit; font-size: 13px; font-weight: 600; padding: 5px 14px; border-radius: 6px;
+           border: 1px solid currentColor; background: transparent; cursor: pointer; }
+  button.kill { color: var(--bad); }
+  button.restart { color: var(--ok); }
+  button:hover:not(:disabled) { background: var(--bg); }
+  button:disabled { color: var(--muted); opacity: 0.5; cursor: default; }
+  .cell.leader { border: 2px solid var(--leader); }
+  .cell.behind { background: var(--warn-bg); }
+  .cell.isdown { background: var(--down-bg); color: var(--muted); }
+  .role { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+  .cell.leader .role { color: var(--leader); }
+  .nums { margin: 4px 0 6px; font-variant-numeric: tabular-nums; }
+  .lag { color: var(--warn); font-weight: 600; }
+  .lines { font: 12px/1.45 ui-monospace, Menlo, monospace; display: flex; flex-direction: column; gap: 2px; }
+  .lines div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .uncommitted { opacity: 0.5; }
+  .ERROR { color: var(--bad); } .WARN { color: var(--warn); }
+  .noleader { background: var(--bad-bg); }
+  .noleader .note { color: var(--bad); }
+  footer { margin-top: 16px; font-size: 12px; }
+  @media (max-width: 700px) {
+    .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .corner { display: none; }
+    .rowname { grid-column: 1 / -1; flex-direction: row; justify-content: space-between; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Distributed log pipeline</h1>
+    <span class="muted" id="status">connecting…</span>
+  </header>
+  <div class="grid">
+    <div class="corner"></div>
+    <div class="contents" id="heads"></div>
+    <div class="contents" id="rows"></div>
+  </div>
+  <footer class="muted">
+    Each cell is one broker's copy of a partition: length, commit index (highest committed offset) and its last lines.
+    The leader's cell has a blue border, copies behind the leader are amber, and faded lines aren't committed yet.
+    Kill stops a broker at once and loses its log; Restart brings it back empty.
+  </footer>
+</main>
+<script>
+const heads = document.getElementById("heads");
+const rows = document.getElementById("rows");
+const statusText = document.getElementById("status");
+const TAIL = 3;
+// Broker headers are built once and updated in place: rebuilding a button
+// every second would drop clicks that land during a redraw.
+const headers = {};
+
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+// The leader is the broker that says it leads; if two do (an old leader that
+// hasn't heard yet), the one with the newer epoch.
+function leaderOf(name, brokers) {
+  let best = null;
+  for (const [id, state] of Object.entries(brokers)) {
+    const copy = state && state.partitions[name];
+    if (copy && copy.role === "leader" && (best === null || copy.epoch > best.copy.epoch)) best = { id, copy };
+  }
+  return best;
+}
+
+async function control(id, action, button) {
+  button.disabled = true;
+  button.textContent = action === "kill" ? "Killing…" : "Starting…";
+  try {
+    await fetch(`/brokers/${id}/${action}`, { method: "POST" });
+  } finally {
+    button.textContent = action === "kill" ? "Kill" : "Restart";
+    refresh();
+  }
+}
+
+function brokerHeader(id) {
+  const head = el("div", "head");
+  const title = el("div", "title");
+  const pill = el("span", "pill");
+  title.append(el("span", "", `Broker ${id}`), pill);
+  const kill = el("button", "kill", "Kill");
+  kill.onclick = () => control(id, "kill", kill);
+  const restart = el("button", "restart", "Restart");
+  restart.onclick = () => control(id, "restart", restart);
+  const buttons = el("div", "buttons");
+  buttons.append(kill, restart);
+  head.append(title, buttons);
+  heads.append(head);
+  return { pill, kill, restart, buttons };
+}
+
+function updateHeader(id, state, controls) {
+  const header = headers[id] || (headers[id] = brokerHeader(id));
+  header.pill.className = "pill " + (state ? "up" : "down");
+  header.pill.textContent = state ? "up" : "down";
+  header.buttons.hidden = !controls;
+  if (!header.kill.textContent.endsWith("…")) header.kill.disabled = !state;
+  if (!header.restart.textContent.endsWith("…")) header.restart.disabled = !!state;
+}
+
+function copyCell(copy, leader, isLeader) {
+  if (!copy) return el("div", "cell isdown", "down");
+  const behind = leader && !isLeader ? leader.copy.length - copy.length : 0;
+  const cell = el("div", "cell" + (isLeader ? " leader" : "") + (behind > 0 ? " behind" : ""));
+  cell.append(el("div", "role", `${isLeader ? "leader" : "follower"} · epoch ${copy.epoch}`));
+  const nums = el("div", "nums", `${copy.length} lines · committed to ${copy.commit_index}`);
+  if (behind > 0) nums.append(" ", el("span", "lag", `−${behind} behind`));
+  cell.append(nums);
+  const lines = el("div", "lines");
+  for (const entry of copy.last_entries.slice(-TAIL)) {
+    const line = el("div", entry.offset > copy.commit_index ? "uncommitted" : "");
+    line.append(`${entry.offset} `, el("span", entry.line.level, entry.line.level), ` ${entry.line.text}`);
+    line.title = line.textContent;
+    lines.append(line);
+  }
+  cell.append(lines);
+  return cell;
+}
+
+function render(data) {
+  const ids = Object.keys(data.brokers);
+  for (const id of ids) updateHeader(id, data.brokers[id], data.controls);
+  const cells = [];
+  for (const name of data.partitions) {
+    const leader = leaderOf(name, data.brokers);
+    const row = el("div", "rowname" + (leader ? "" : " noleader"));
+    row.append(el("span", "", name), el("span", "note muted", leader ? `leader: ${leader.id}` : "no leader"));
+    cells.push(row);
+    for (const id of ids) {
+      const state = data.brokers[id];
+      cells.push(copyCell(state && state.partitions[name], leader, leader && leader.id === id));
+    }
+  }
+  rows.replaceChildren(...cells);
+}
+
+async function refresh() {
+  try {
+    const response = await fetch("/cluster");
+    render(await response.json());
+    statusText.textContent = "updated " + new Date().toLocaleTimeString();
+  } catch (error) {
+    statusText.textContent = "dashboard server not reachable";
+  }
+}
+
+refresh();
+setInterval(refresh, 1000);
+</script>
+</body>
+</html>
