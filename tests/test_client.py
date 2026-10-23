@@ -28,14 +28,21 @@ def test_unreachable_broker_is_skipped(cluster):
     assert client.leader["login"] == 1
 
 
-def test_no_leader_when_leader_is_down(cluster):
-    # Until leader takeover exists (M6), a partition whose leader is down has
-    # no leader: the other brokers keep pointing back at the dead one.
-    transport = cluster.transport()
+def test_client_finds_the_new_leader_after_a_takeover(cluster):
+    client = cluster.client()
     cluster.stop(1)
-    with pytest.raises(NoLeaderAvailable):
-        send(cluster.client(transport), make_line(0))
-    assert len(transport.requests) == 2 * 3
+    cluster.wait_for_leader("login", among=(2, 3))
+    assert send(client, make_line(0)) == {"offset": 0}
+    assert client.leader["login"] == 2
+
+
+def test_broker_without_a_leader_sends_the_client_onwards(cluster):
+    transport = cluster.transport()
+    client = cluster.client(transport)
+    cluster.node(1).leaders["search"] = None  # as if broker 1 hadn't heard who leads search
+    client.leader["search"] = 1
+    assert send(client, make_line(0, service="search")) == {"offset": 0}
+    assert [b for b, _, _ in transport.requests] == [1, 2]
 
 
 def test_leader_that_cannot_commit_is_not_retried_elsewhere(cluster):

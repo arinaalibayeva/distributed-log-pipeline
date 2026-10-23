@@ -4,14 +4,14 @@ import pytest
 
 from broker.node import BrokerNode, NotLeaderError
 from broker.partition import StaleEpochError
-from conftest import make_line
+from conftest import make_line, make_node
 
 TIMEOUT = 1.5  # BrokerNode's default leader_timeout
 LATER = 10.0  # a time when every broker's takeover timer has run out
 
 
 def cluster(now=0.0):
-    return {b: BrokerNode(b, now=now) for b in (1, 2, 3)}
+    return {b: make_node(b, now=now) for b in (1, 2, 3)}
 
 
 def take_over(candidate, voters, name="login", now=LATER, attempts=2):
@@ -84,8 +84,27 @@ def test_broker_refuses_while_it_hears_from_the_leader():
 
 def test_a_freshly_started_broker_waits_before_agreeing():
     node = BrokerNode(3, now=100.0)
-    assert node.grant("login", 2, 1, -1, now=100.5)["reason"] == "leader_alive"
-    assert node.grant("login", 2, 1, -1, now=100.0 + TIMEOUT)["granted"] is True
+    assert node.grant("login", 2, 1, -1, now=100.5)["reason"] == "just_started"
+    assert node.grant("login", 2, 1, -1, now=100.0 + TIMEOUT / 2)["granted"] is True
+
+
+def test_a_new_broker_leads_nothing_and_knows_no_leader():
+    node = BrokerNode(1, now=0.0)
+    assert node.leaders == {"login": None, "search": None, "upload": None}
+    assert node.follower_lengths == {}
+    with pytest.raises(NotLeaderError) as info:
+        node.append("login", make_line(0))
+    assert info.value.leader is None
+
+
+def test_first_leaders_take_over_in_preference_order():
+    nodes = {b: BrokerNode(b, now=0.0) for b in (1, 2, 3)}
+    for name, first in (("login", 1), ("search", 2), ("upload", 3)):
+        assert nodes[first].should_take_over(name, now=TIMEOUT)
+        assert not any(nodes[b].should_take_over(name, now=TIMEOUT) for b in nodes if b != first)
+        others = [nodes[b] for b in nodes if b != first]
+        assert take_over(nodes[first], others, name, now=TIMEOUT) is True
+        assert nodes[first].partitions[name].epoch == 1
 
 
 def test_leader_refuses_to_be_replaced():
@@ -170,7 +189,7 @@ def test_newer_epoch_beats_a_longer_log():
     # Broker 3 holds two lines from epoch 0 that were never committed. Broker
     # 1 holds a line that a later leader (epoch 2) re-marked and committed.
     # The newer history must win even though it is shorter.
-    a, b, c = BrokerNode(1, now=0.0), BrokerNode(2, now=0.0), BrokerNode(3, now=0.0)
+    a, b, c = make_node(1, now=0.0), make_node(2, now=0.0), make_node(3, now=0.0)
     c.replicate("login", 1, 0, 0, [
         {"offset": 0, "epoch": 0, "line": make_line(0)},
         {"offset": 1, "epoch": 0, "line": make_line(1)},
@@ -245,7 +264,7 @@ def test_reply_to_a_message_from_an_earlier_epoch_is_ignored():
 
 
 def test_lines_from_an_older_epoch_wait_for_one_of_the_current_epoch():
-    node = BrokerNode(1, now=0.0)
+    node = make_node(1, now=0.0)
     node.append("login", make_line(0))  # epoch 0
     node.partitions["login"].set_epoch(1)  # a new epoch, without re-marking
     node.record_follower("login", 2, 1)

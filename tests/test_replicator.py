@@ -5,9 +5,8 @@ import json
 
 import httpx
 
-from broker.node import BrokerNode
 from broker.replication import Replicator
-from conftest import make_line
+from conftest import make_line, make_node
 
 BROKERS = {1: "http://b1", 2: "http://b2", 3: "http://b3"}
 
@@ -17,7 +16,7 @@ def run(coroutine):
 
 
 def replicator_with(handler, node=None):
-    node = node or BrokerNode(1, list(BROKERS))
+    node = node or make_node(1, broker_ids=list(BROKERS))
     replicator = Replicator(node, BROKERS, batch=2)
     replicator.http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     return replicator
@@ -99,8 +98,44 @@ def test_wait_committed():
         replicator.node.record_follower("login", 2, 1)
 
     async def scenario():
-        assert await replicator.wait_committed("login", 0, timeout=0.01) is False
+        assert await replicator.wait_committed("login", 0, "login-0", timeout=0.01) is False
         asyncio.get_running_loop().create_task(commit_soon())
-        return await replicator.wait_committed("login", 0, timeout=1.0)
+        return await replicator.wait_committed("login", 0, "login-0", timeout=1.0)
 
     assert run(scenario()) is True
+
+
+def test_wait_committed_gives_up_when_leadership_is_lost():
+    replicator = replicator_with(lambda request: httpx.Response(500))
+    replicator.node.append("login", make_line(0))
+
+    async def step_down_soon():
+        await asyncio.sleep(0.05)
+        replicator.node.step_down("login")
+
+    async def scenario():
+        asyncio.get_running_loop().create_task(step_down_soon())
+        return await replicator.wait_committed("login", 0, "login-0", timeout=1.0)
+
+    assert run(scenario()) is False
+
+
+def test_newer_epoch_from_a_follower_makes_the_leader_step_down(capsys):
+    def handler(request):
+        return httpx.Response(409, json={"error": "stale_epoch", "epoch": 4, "detail": "..."})
+
+    replicator = replicator_with(handler)
+    replicator.node.append("login", make_line(0))
+    assert run(replicator.send_once("login", 2)) is False
+    assert not replicator.node.is_leader("login")
+    assert replicator.node.partitions["login"].epoch == 4
+    assert len(replicator.node.partitions["login"]) == 0  # the unacked line is dropped
+    assert "stepped down" in capsys.readouterr().out
+
+
+def test_follower_sends_nothing():
+    def handler(request):
+        raise AssertionError("a follower must not replicate")
+
+    replicator = replicator_with(handler)
+    assert run(replicator.send_once("search", 3)) is False

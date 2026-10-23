@@ -1,9 +1,10 @@
 """Fixed layout of the cluster: where each broker runs and who leads what.
 
-Every broker stores a copy of every partition. Each partition has one leader,
-and leadership is spread out so that each broker leads one partition. The
-preference order is who a client tries next when the leader can't be reached
-(and, from M6, who takes over when the leader dies).
+Every broker stores a copy of every partition. Each partition has one leader
+at a time. The preference order decides who takes over first: the first
+broker leads when the cluster starts (so each broker leads one partition),
+and when a leader dies the next live broker in line takes over. Clients also
+try brokers in this order when they don't know the leader.
 """
 
 BROKERS = {
@@ -22,7 +23,7 @@ PARTITIONS = list(PREFERENCE)
 
 
 def initial_leader(partition):
-    """Return the broker that leads `partition` when the cluster starts."""
+    """Return the broker that should lead `partition` when the cluster starts."""
     return PREFERENCE[partition][0]
 
 

@@ -8,12 +8,14 @@ Endpoints:
     POST /partitions/{name}/append      store a log line; replies once it is committed (leader only)
     GET  /partitions/{name}/read        committed lines from an offset (leader only)
     POST /partitions/{name}/replicate   entries copied from the leader (followers only)
+    POST /partitions/{name}/takeover    another broker asks to take over the partition
     GET  /state                         summary of every partition, for the dashboard
 
 A request for a partition this broker doesn't lead gets a 421 response with
-the leader's ID, so the client can retry there. An append that can't be
-committed in time (a majority of brokers can't be reached) gets a 503, and the
-producer keeps the line and retries.
+the leader's ID (null while it knows no leader), so the client can retry
+there. An append that can't be committed in time (a majority of brokers can't
+be reached, or this broker stopped leading) gets a 503, and the producer keeps
+the line and retries.
 """
 
 import sys
@@ -29,6 +31,7 @@ from broker import config
 from broker.node import BrokerNode, NotFollowerError, NotLeaderError, UnknownPartitionError
 from broker.partition import ConflictError, StaleEpochError
 from broker.replication import Replicator
+from broker.takeover import Takeover
 
 
 class LogLine(BaseModel):
@@ -55,20 +58,34 @@ class ReplicateRequest(BaseModel):
     commit_index: int = Field(ge=-1)
 
 
-def create_app(broker_id, brokers=config.BROKERS, interval=0.2, batch=500, ack_timeout=1.0):
+class TakeoverRequest(BaseModel):
+    candidate: int
+    epoch: int = Field(ge=1)
+    commit_index: int = Field(ge=-1)
+    dry_run: bool = False
+
+
+def create_app(broker_id, brokers=config.BROKERS, interval=0.2, batch=500, ack_timeout=1.0,
+               leader_timeout=1.5, stagger=0.5, transport=None):
     """Build the app for one broker.
 
     `brokers` maps every broker ID to its URL. `interval` and `batch` tune
     replication (see Replicator), and `ack_timeout` is how long an append
     waits for its line to be committed before giving up with a 503.
+    `leader_timeout` and `stagger` set when a follower takes over from a
+    quiet leader (see BrokerNode). `transport` replaces the HTTP transport
+    used to reach other brokers, for tests.
     """
-    node = BrokerNode(broker_id, list(brokers))
-    replicator = Replicator(node, brokers, interval=interval, batch=batch)
+    node = BrokerNode(broker_id, list(brokers), leader_timeout=leader_timeout, stagger=stagger)
+    replicator = Replicator(node, brokers, interval=interval, batch=batch, transport=transport)
+    takeover = Takeover(node, replicator, brokers, transport=transport)
 
     @asynccontextmanager
     async def lifespan(app):
         replicator.start()
+        takeover.start()
         yield
+        await takeover.stop()
         await replicator.stop()
 
     app = FastAPI(title=f"broker {broker_id}", lifespan=lifespan)
@@ -112,7 +129,7 @@ def create_app(broker_id, brokers=config.BROKERS, interval=0.2, batch=500, ack_t
             raise HTTPException(status_code=400, detail=f"line is for {line.service}, not {name}")
         offset = node.append(name, line.model_dump())
         replicator.wake(name)
-        if not await replicator.wait_committed(name, offset, ack_timeout):
+        if not await replicator.wait_committed(name, offset, line.msg_id, ack_timeout):
             return JSONResponse(
                 status_code=503,
                 content={"error": "not_committed", "partition": name, "offset": offset},
@@ -135,6 +152,12 @@ def create_app(broker_id, brokers=config.BROKERS, interval=0.2, batch=500, ack_t
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         return {"accepted": accepted, "length": length}
+
+    @app.post("/partitions/{name}/takeover")
+    async def takeover_request(name: str, request: TakeoverRequest):
+        if request.candidate not in node.peers:
+            raise HTTPException(status_code=400, detail=f"unknown broker {request.candidate}")
+        return node.grant(name, request.candidate, request.epoch, request.commit_index, request.dry_run)
 
     @app.get("/state")
     async def state():

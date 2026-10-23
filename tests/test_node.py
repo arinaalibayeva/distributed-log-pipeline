@@ -1,8 +1,8 @@
 import pytest
 
-from broker.node import BrokerNode, NotFollowerError, NotLeaderError, UnknownPartitionError
+from broker.node import NotFollowerError, NotLeaderError, UnknownPartitionError
 from broker.partition import StaleEpochError
-from conftest import make_line
+from conftest import make_line, make_node
 
 
 def entries_of(node, name):
@@ -10,19 +10,19 @@ def entries_of(node, name):
 
 
 def test_each_broker_leads_one_partition():
-    assert [BrokerNode(1).is_leader(p) for p in ["login", "search", "upload"]] == [True, False, False]
-    assert [BrokerNode(2).is_leader(p) for p in ["login", "search", "upload"]] == [False, True, False]
-    assert [BrokerNode(3).is_leader(p) for p in ["login", "search", "upload"]] == [False, False, True]
+    assert [make_node(1).is_leader(p) for p in ["login", "search", "upload"]] == [True, False, False]
+    assert [make_node(2).is_leader(p) for p in ["login", "search", "upload"]] == [False, True, False]
+    assert [make_node(3).is_leader(p) for p in ["login", "search", "upload"]] == [False, False, True]
 
 
 def test_leader_tracks_only_the_partitions_it_leads():
-    node = BrokerNode(1)
+    node = make_node(1)
     assert node.peers == [2, 3]
     assert node.follower_lengths == {"login": {2: 0, 3: 0}}
 
 
 def test_append_is_not_committed_until_a_follower_has_it():
-    node = BrokerNode(1)
+    node = make_node(1)
     assert node.append("login", make_line(0)) == 0
     assert node.read("login") == []
     assert node.record_follower("login", 2, 1) is True
@@ -30,7 +30,7 @@ def test_append_is_not_committed_until_a_follower_has_it():
 
 
 def test_one_follower_is_enough_for_a_majority():
-    node = BrokerNode(1)
+    node = make_node(1)
     for n in range(3):
         node.append("login", make_line(n))
     node.record_follower("login", 3, 2)
@@ -38,7 +38,7 @@ def test_one_follower_is_enough_for_a_majority():
 
 
 def test_commit_follows_the_second_highest_copy():
-    node = BrokerNode(1)
+    node = make_node(1)
     for n in range(5):
         node.append("login", make_line(n))
     node.record_follower("login", 2, 2)
@@ -47,7 +47,7 @@ def test_commit_follows_the_second_highest_copy():
 
 
 def test_follower_restart_lowers_its_length_but_not_the_commit():
-    node = BrokerNode(1)
+    node = make_node(1)
     for n in range(3):
         node.append("login", make_line(n))
     node.record_follower("login", 2, 3)
@@ -57,14 +57,14 @@ def test_follower_restart_lowers_its_length_but_not_the_commit():
 
 
 def test_follower_longer_than_leader_does_not_commit_past_leader():
-    node = BrokerNode(1)
+    node = make_node(1)
     node.append("login", make_line(0))
     node.record_follower("login", 2, 50)
     assert node.partitions["login"].commit_index == 0
 
 
 def test_message_sends_what_the_follower_is_missing():
-    node = BrokerNode(1)
+    node = make_node(1)
     for n in range(5):
         node.append("login", make_line(n))
     node.record_follower("login", 2, 2)
@@ -77,13 +77,13 @@ def test_message_sends_what_the_follower_is_missing():
 
 
 def test_message_from_the_start_has_no_previous_entry():
-    node = BrokerNode(1)
+    node = make_node(1)
     node.append("login", make_line(0))
     assert node.message_for("login", 2, batch=10)["prev_msg_id"] is None
 
 
 def test_message_for_up_to_date_follower_is_a_heartbeat():
-    node = BrokerNode(1)
+    node = make_node(1)
     node.append("login", make_line(0))
     node.record_follower("login", 2, 1)
     message = node.message_for("login", 2, batch=10)
@@ -92,7 +92,7 @@ def test_message_for_up_to_date_follower_is_a_heartbeat():
 
 
 def test_accepted_reply_counts_only_what_was_sent():
-    node = BrokerNode(1)
+    node = make_node(1)
     for n in range(3):
         node.append("login", make_line(n))
     message = node.message_for("login", 2, batch=2)
@@ -102,7 +102,7 @@ def test_accepted_reply_counts_only_what_was_sent():
 
 
 def test_rejected_reply_resends_from_the_followers_length():
-    node = BrokerNode(1)
+    node = make_node(1)
     for n in range(5):
         node.append("login", make_line(n))
     node.record_follower("login", 2, 4)
@@ -112,7 +112,7 @@ def test_rejected_reply_resends_from_the_followers_length():
 
 
 def test_rejected_reply_on_mismatch_steps_back_one_entry():
-    node = BrokerNode(1)
+    node = make_node(1)
     for n in range(5):
         node.append("login", make_line(n))
     node.record_follower("login", 2, 4)
@@ -122,7 +122,7 @@ def test_rejected_reply_on_mismatch_steps_back_one_entry():
 
 
 def test_follower_stores_entries_and_follows_commit():
-    leader, follower = BrokerNode(1), BrokerNode(2)
+    leader, follower = make_node(1), make_node(2)
     for n in range(3):
         leader.append("login", make_line(n))
     leader.record_follower("login", 3, 3)
@@ -138,7 +138,7 @@ def test_follower_stores_entries_and_follows_commit():
 
 
 def test_follower_reports_its_length_on_a_gap():
-    leader, follower = BrokerNode(1), BrokerNode(2)
+    leader, follower = make_node(1), make_node(2)
     for n in range(3):
         leader.append("login", make_line(n))
     entries = leader.partitions["login"].read_uncommitted(2)
@@ -147,30 +147,30 @@ def test_follower_reports_its_length_on_a_gap():
 
 def test_follower_rejects_entries_from_a_non_leader():
     with pytest.raises(NotFollowerError):
-        BrokerNode(2).replicate("login", 3, 0, 0, [], -1)
+        make_node(2).replicate("login", 3, 0, 0, [], -1)
 
 
 def test_leader_rejects_entries_for_its_own_partition():
     with pytest.raises(NotFollowerError):
-        BrokerNode(1).replicate("login", 1, 0, 0, [], -1)
+        make_node(1).replicate("login", 1, 0, 0, [], -1)
 
 
 def test_follower_rejects_older_epoch():
-    follower = BrokerNode(2)
+    follower = make_node(2)
     follower.partitions["login"].set_epoch(3)
     with pytest.raises(StaleEpochError):
         follower.replicate("login", 1, 2, 0, [], -1)
 
 
 def test_retried_line_is_stored_once():
-    node = BrokerNode(1)
+    node = make_node(1)
     node.append("login", make_line(0))
     assert node.append("login", make_line(0)) == 0
     assert len(node.partitions["login"]) == 1
 
 
 def test_follower_rejects_append_and_names_leader():
-    node = BrokerNode(1)
+    node = make_node(1)
     with pytest.raises(NotLeaderError) as info:
         node.append("search", make_line(0, service="search"))
     assert info.value.leader == 2
@@ -179,18 +179,18 @@ def test_follower_rejects_append_and_names_leader():
 
 def test_follower_rejects_read():
     with pytest.raises(NotLeaderError):
-        BrokerNode(1).read("upload")
+        make_node(1).read("upload")
 
 
 def test_unknown_partition_is_rejected():
     with pytest.raises(UnknownPartitionError):
-        BrokerNode(1).append("billing", make_line(0, service="billing"))
+        make_node(1).append("billing", make_line(0, service="billing"))
     with pytest.raises(UnknownPartitionError):
-        BrokerNode(2).replicate("billing", 1, 0, 0, [], -1)
+        make_node(2).replicate("billing", 1, 0, 0, [], -1)
 
 
 def test_read_respects_offset_and_limit():
-    node = BrokerNode(1)
+    node = make_node(1)
     for n in range(10):
         node.append("login", make_line(n))
     node.record_follower("login", 2, 10)
@@ -198,7 +198,7 @@ def test_read_respects_offset_and_limit():
 
 
 def test_state_reports_roles_progress_and_last_entries():
-    node = BrokerNode(1)
+    node = make_node(1)
     for n in range(7):
         node.append("login", make_line(n))
     node.record_follower("login", 2, 7)
@@ -216,9 +216,9 @@ def test_state_reports_roles_progress_and_last_entries():
 def test_follower_with_different_history_never_commits_leaders_lines():
     # A leader restarted empty must not convince a follower holding other
     # committed lines that its new line 0 is already there.
-    follower = BrokerNode(2)
+    follower = make_node(2)
     follower.replicate("login", 1, 0, 0, [{"offset": 0, "epoch": 0, "line": make_line(7)}], 0)
-    restarted_leader = BrokerNode(1)
+    restarted_leader = make_node(1)
     restarted_leader.append("login", make_line(0))
     heartbeat = {"epoch": 0, "start": 0, "entries": []}
     accepted, length = follower.replicate("login", 1, 0, 0, [], -1)
@@ -228,7 +228,7 @@ def test_follower_with_different_history_never_commits_leaders_lines():
 
 
 def test_follower_with_a_different_tail_asks_to_resend_after_its_commit():
-    follower = BrokerNode(2)
+    follower = make_node(2)
     entries = [{"offset": n, "epoch": 0, "line": make_line(n)} for n in range(4)]
     follower.replicate("login", 1, 0, 0, entries, 0)
     assert follower.replicate("login", 1, 1, 4, [], 0, "login-3", 1) == (False, 1)

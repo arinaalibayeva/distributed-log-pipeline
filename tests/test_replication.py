@@ -5,8 +5,6 @@ every acknowledged line is stored exactly once on the leader, no copy holds
 a msg_id twice, and every copy agrees with the leader up to its commit index.
 """
 
-import time
-
 import pytest
 
 from broker.client import NoLeaderAvailable
@@ -75,18 +73,40 @@ def test_no_ack_without_a_majority(cluster):
     client = cluster.client()
     with pytest.raises(NoLeaderAvailable):
         send(client, make_line(0))
-    assert len(cluster.entries(1, "login")) == 1
     assert cluster.node(1).partitions["login"].commit_index == -1
 
 
-def test_unacked_line_commits_once_a_follower_returns(cluster):
+def test_leader_without_a_majority_steps_down_and_drops_unacked_lines(cluster):
     cluster.stop(2)
     cluster.stop(3)
+    cluster.node(1).append("login", make_line(0))
+    wait_until(lambda: not cluster.node(1).is_leader("login"), message="broker 1 to step down")
+    assert cluster.entries(1, "login") == []
     with pytest.raises(NoLeaderAvailable):
-        send(cluster.client(), make_line(0))
+        send(cluster.client(), make_line(1))
+
+
+def test_unacked_line_is_stored_once_after_a_majority_returns(cluster):
+    cluster.stop(2)
+    cluster.stop(3)
+    producer = Producer("login", cluster.client())
+    producer.add([make_line(0)])
+    assert producer.flush() is False
     cluster.start(2)
+    wait_until(producer.flush, message="the retried line to be acked")
+    leader = cluster.wait_for_leader("login")
     wait_for_copies(cluster, "login", 1, brokers=(1, 2))
-    assert send(cluster.client(), make_line(0)) == {"offset": 0}  # the retry is acked, not duplicated
+    check_invariants(cluster, "login", leader, ["login-0"], brokers=(1, 2))
+
+
+def test_follower_takes_over_when_the_leader_dies(cluster):
+    acked = produce(cluster, "login", range(10))
+    cluster.stop(1)
+    assert cluster.wait_for_leader("login", among=(2, 3)) == 2  # next in login's preference order
+    assert cluster.node(2).partitions["login"].epoch == 2  # the first leaders took over in epoch 1
+    acked += produce(cluster, "login", range(10, 15))
+    wait_for_copies(cluster, "login", 15, brokers=(2, 3))
+    check_invariants(cluster, "login", 2, acked, brokers=(2, 3))
 
 
 def test_restarted_follower_catches_up_from_empty(cluster):
@@ -134,17 +154,15 @@ def test_both_followers_restart_and_rebuild_the_copies(cluster):
     check_invariants(cluster, "search", 2, acked)
 
 
-def test_restarted_leader_cannot_commit_over_the_followers_history(cluster):
-    # Until leader takeover (M6), a leader that restarts comes back empty
-    # while its followers hold the committed lines. It must not commit a
-    # new line at an offset where the followers have a different one.
+def test_restarted_leader_rejoins_as_a_follower_and_catches_up(cluster):
+    # A leader that restarts comes back with an empty log. It must not lead
+    # again with that log: another broker takes over, and the restarted one
+    # follows it and copies everything back.
     acked = produce(cluster, "upload", range(10))
-    wait_for_copies(cluster, "upload", 10)
     cluster.stop(3)
     cluster.start(3)
-    with pytest.raises(NoLeaderAvailable):
-        send(cluster.client(), make_line(99, service="upload"))
-    time.sleep(0.3)  # several replication rounds
-    assert cluster.node(3).partitions["upload"].commit_index == -1
-    for broker_id in (1, 2):
-        assert [e["line"]["msg_id"] for e in cluster.entries(broker_id, "upload")] == acked
+    leader = cluster.wait_for_leader("upload", among=(1, 2))
+    acked += produce(cluster, "upload", range(10, 15))
+    wait_for_copies(cluster, "upload", 15)
+    assert cluster.node(3).leaders["upload"] == leader
+    check_invariants(cluster, "upload", leader, acked)

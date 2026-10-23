@@ -48,17 +48,15 @@ def test_acked_lines_are_on_a_majority(cluster):
     assert copies >= 2
 
 
-def test_lines_stay_buffered_while_no_leader(cluster):
+def test_lines_buffered_while_the_leader_is_down_reach_the_new_leader(cluster):
     producer = Producer("login", cluster.client())
-    cluster.stop(1)
-    producer.add([make_line(n) for n in range(3)])
-    assert producer.flush() is False
-    assert len(producer.pending) == 3
-
-    cluster.start(1)
-    producer.add([make_line(3)])
+    producer.add([make_line(0)])
     assert producer.flush() is True
-    assert msg_ids(cluster, 1, "login") == [f"login-{n}" for n in range(4)]
+    cluster.stop(1)
+    producer.add([make_line(n) for n in range(1, 4)])
+    wait_until(producer.flush, message="the producer to reach the new leader")
+    assert cluster.leader("login") == 2
+    assert msg_ids(cluster, 2, "login") == [f"login-{n}" for n in range(4)]
 
 
 def test_lines_stay_buffered_without_a_majority(cluster):
@@ -71,9 +69,9 @@ def test_lines_stay_buffered_without_a_majority(cluster):
     assert len(producer.pending) == 2
 
     cluster.start(3)
-    assert producer.flush() is True
-    assert msg_ids(cluster, 1, "login") == ["login-0", "login-1"]
-    wait_until(lambda: msg_ids(cluster, 3, "login") == ["login-0", "login-1"], message="broker 3 to catch up")
+    wait_until(producer.flush, message="the producer to flush once a majority is back")
+    for b in (1, 3):
+        wait_until(lambda: msg_ids(cluster, b, "login") == ["login-0", "login-1"], message=f"broker {b} to have both")
 
 
 def test_lost_ack_is_retried_without_duplicate(cluster):

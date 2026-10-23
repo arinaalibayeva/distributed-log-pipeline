@@ -3,7 +3,8 @@
 Producers and consumers use this so they don't have to know who the leader
 is. The client remembers its best guess for each partition's leader. If a
 broker answers "not leader", the client switches to the broker it names; if a
-broker can't be reached, the client tries the next one in preference order.
+broker can't be reached, or doesn't know the leader either (during a
+takeover), the client tries the next one in preference order.
 If the leader answers that it can't commit right now (503), the client gives
 up at once: no other broker can help, and the caller should retry later.
 """
@@ -43,7 +44,8 @@ class ClusterClient:
                 self.leader[partition] = self._next_broker(partition, broker)
                 continue
             if response.status_code == 421:
-                self.leader[partition] = response.json()["leader"]
+                named = response.json()["leader"]
+                self.leader[partition] = named if named is not None else self._next_broker(partition, broker)
                 continue
             if response.status_code == 503:
                 raise NoLeaderAvailable(partition)

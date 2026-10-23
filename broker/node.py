@@ -51,7 +51,14 @@ class UnknownPartitionError(Exception):
 
 class BrokerNode:
     def __init__(self, broker_id, broker_ids=tuple(config.BROKERS), partitions=config.PARTITIONS,
-                 preference=config.PREFERENCE, leader_timeout=1.5, stagger=0.5, now=None):
+                 preference=config.PREFERENCE, leader_timeout=1.5, stagger=0.5, leaders=None, now=None):
+        """Create a broker's state.
+
+        A broker starts out leading nothing and knowing no leader: leaders
+        are decided by takeover (see the module docstring), so a broker that
+        restarts with an empty log can't come back believing it still leads.
+        `leaders` maps partitions to a starting leader, for tests.
+        """
         self.id = broker_id
         self.peers = [b for b in broker_ids if b != broker_id]
         self.majority = (len(self.peers) + 1) // 2 + 1
@@ -59,7 +66,7 @@ class BrokerNode:
         self.preference = preference
         self.leader_timeout = leader_timeout
         self.stagger = stagger
-        self.leaders = {name: config.initial_leader(name) for name in partitions}
+        self.leaders = {name: (leaders or {}).get(name) for name in partitions}
         # On the leader: how many of its entries each follower is known to
         # have, counting only entries the follower confirmed match its own.
         # It starts at 0 and grows as the follower accepts messages.
@@ -70,9 +77,10 @@ class BrokerNode:
         started = _now(now)
         self.last_contact = {name: {peer: started for peer in self.peers} for name in self.follower_lengths}
         # On a follower: when it last heard from a leader, or agreed to a
-        # takeover. Starting up counts, so a broker that just started waits
-        # to hear from an existing leader before agreeing to a takeover.
-        self.last_heard = {name: started for name in partitions}
+        # takeover (None if never). The takeover timer counts from startup
+        # until then.
+        self.started = started
+        self.last_heard = {name: None for name in partitions}
         # The highest epoch other brokers have mentioned, so the next
         # takeover attempt asks for one above it.
         self.seen_epochs = {name: 0 for name in partitions}
@@ -212,7 +220,8 @@ class BrokerNode:
         brokers further down the order only try if the ones before them
         haven't taken over.
         """
-        waited = _now(now) - self.last_heard[name]
+        heard = self.last_heard[name]
+        waited = _now(now) - (self.started if heard is None else heard)
         return not self.is_leader(name) and waited >= self.leader_timeout + self.rank(name) * self.stagger
 
     def wait_again(self, name, now=None):
@@ -231,8 +240,10 @@ class BrokerNode:
         """Answer `candidate`'s request to take over `name` with `epoch`.
 
         This broker refuses if it leads `name`, if it heard from a leader in
-        the last `leader_timeout` seconds, or if it already knows `epoch` (it
-        agrees to at most one broker per epoch). With `dry_run`, it only says
+        the last `leader_timeout` seconds, if it started less than half that
+        ago (a restarted broker first gives the current leader a chance to
+        reach it), or if it already knows `epoch` (it agrees to at most one
+        broker per epoch). With `dry_run`, it only says
         whether it would agree, so a broker cut off from the others can find
         out without raising anyone's epoch. Otherwise agreeing moves this
         broker to `epoch`, so it ignores the old leader from then on, and the
@@ -242,10 +253,13 @@ class BrokerNode:
         """
         partition = self._partition(name)
         now = _now(now)
+        heard = self.last_heard[name]
         if self.is_leader(name):
             reason = "leader"
-        elif now - self.last_heard[name] < self.leader_timeout:
+        elif heard is not None and now - heard < self.leader_timeout:
             reason = "leader_alive"
+        elif now - self.started < self.leader_timeout / 2:
+            reason = "just_started"
         elif epoch <= partition.epoch:
             reason = "epoch_taken"
         else:

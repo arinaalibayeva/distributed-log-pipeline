@@ -4,6 +4,10 @@ Each broker is a real uvicorn server on a free port, in its own thread, so
 tests exercise the actual HTTP and replication code. Tests can stop a broker
 (it refuses connections) and start it again with an empty log, like a crashed
 broker coming back. Clients can count their requests and lose replies.
+
+The cluster uses short timeouts so takeovers happen within a second, and it
+waits at startup until each partition is led by the first broker in its
+preference order (login by 1, search by 2, upload by 3).
 """
 
 import socket
@@ -16,7 +20,15 @@ import uvicorn
 
 from broker import config
 from broker.client import ClusterClient
+from broker.node import BrokerNode
 from broker.server import create_app
+
+INITIAL_LEADERS = {name: config.initial_leader(name) for name in config.PARTITIONS}
+
+
+def make_node(broker_id, **options):
+    """A BrokerNode in a cluster that started with the usual leaders, in epoch 0."""
+    return BrokerNode(broker_id, leaders=INITIAL_LEADERS, **options)
 
 
 def free_port():
@@ -39,15 +51,24 @@ def wait_until(condition, timeout=5.0, message="condition"):
 class LocalCluster:
     def __init__(self, **app_options):
         self.brokers = {b: f"http://127.0.0.1:{free_port()}" for b in config.BROKERS}
-        self.options = {"interval": 0.05, "ack_timeout": 0.5, **app_options}
+        self.options = {"interval": 0.05, "ack_timeout": 0.5, "leader_timeout": 0.3, "stagger": 0.2, **app_options}
         self.apps = {}
         self.servers = {}
         self.threads = {}
         for broker_id in self.brokers:
-            self.start(broker_id)
+            self._launch(broker_id)
+        for broker_id in self.brokers:
+            self._wait_started(broker_id)
+        wait_until(lambda: all(self.leader(name) == leader for name, leader in INITIAL_LEADERS.items())
+                   and all(self.node(b).leaders == INITIAL_LEADERS for b in self.brokers),
+                   message="the first leaders to take over")
 
     def start(self, broker_id):
         """Start a broker with an empty log."""
+        self._launch(broker_id)
+        self._wait_started(broker_id)
+
+    def _launch(self, broker_id):
         app = create_app(broker_id, brokers=self.brokers, **self.options)
         port = int(self.brokers[broker_id].rsplit(":", 1)[1])
         server = uvicorn.Server(uvicorn.Config(
@@ -55,10 +76,13 @@ class LocalCluster:
         ))
         thread = threading.Thread(target=server.run, daemon=True)
         thread.start()
-        wait_until(lambda: server.started, timeout=10, message=f"broker {broker_id} to start")
         self.apps[broker_id] = app
         self.servers[broker_id] = server
         self.threads[broker_id] = thread
+
+    def _wait_started(self, broker_id):
+        server = self.servers[broker_id]
+        wait_until(lambda: server.started, timeout=10, message=f"broker {broker_id} to start")
 
     def stop(self, broker_id):
         """Stop a broker, like a crash: it stops answering and its log is gone."""
@@ -72,6 +96,18 @@ class LocalCluster:
 
     def node(self, broker_id):
         return self.apps[broker_id].state.node
+
+    def leader(self, partition):
+        """The running broker that leads `partition` in the newest epoch, or None."""
+        leading = [b for b in self.servers if self.node(b).is_leader(partition)]
+        return max(leading, key=lambda b: self.node(b).partitions[partition].epoch, default=None)
+
+    def wait_for_leader(self, partition, among=None, timeout=5.0):
+        """Wait until a running broker (one of `among`, if given) leads `partition`; return it."""
+        def found():
+            leader = self.leader(partition)
+            return leader if leader is not None and (among is None or leader in among) else None
+        return wait_until(found, timeout=timeout, message=f"a leader for {partition}")
 
     def client(self, transport=None):
         http = httpx.Client(transport=transport or httpx.HTTPTransport())
