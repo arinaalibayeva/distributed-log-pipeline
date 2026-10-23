@@ -70,7 +70,7 @@ def test_message_sends_what_the_follower_is_missing():
     node.record_follower("login", 2, 2)
     message = node.message_for("login", 2, batch=2)
     assert (message["leader"], message["epoch"], message["start"]) == (1, 0, 2)
-    assert message["prev_msg_id"] == "login-1"
+    assert (message["prev_msg_id"], message["prev_epoch"]) == ("login-1", 0)
     assert [e["offset"] for e in message["entries"]] == [2, 3]
     assert message["commit_index"] == 1
     assert node.is_behind("login", 2)
@@ -128,7 +128,8 @@ def test_follower_stores_entries_and_follows_commit():
     leader.record_follower("login", 3, 3)
     m = leader.message_for("login", 2, batch=10)
     accepted, length = follower.replicate(
-        "login", m["leader"], m["epoch"], m["start"], m["entries"], m["commit_index"], m["prev_msg_id"], now=5.0,
+        "login", m["leader"], m["epoch"], m["start"], m["entries"], m["commit_index"],
+        m["prev_msg_id"], m["prev_epoch"], now=5.0,
     )
     assert (accepted, length) == (True, 3)
     assert entries_of(follower, "login") == entries_of(leader, "login")
@@ -224,3 +225,10 @@ def test_follower_with_different_history_never_commits_leaders_lines():
     restarted_leader.record_reply("login", 2, heartbeat, accepted, length)
     assert restarted_leader.partitions["login"].commit_index == -1
     assert restarted_leader.message_for("login", 2, batch=10)["entries"][0]["line"]["msg_id"] == "login-0"
+
+
+def test_follower_with_a_different_tail_asks_to_resend_after_its_commit():
+    follower = BrokerNode(2)
+    entries = [{"offset": n, "epoch": 0, "line": make_line(n)} for n in range(4)]
+    follower.replicate("login", 1, 0, 0, entries, 0)
+    assert follower.replicate("login", 1, 1, 4, [], 0, "login-3", 1) == (False, 1)

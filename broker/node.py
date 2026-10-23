@@ -73,17 +73,19 @@ class BrokerNode:
         """Build the next replication message for `follower`.
 
         It carries up to `batch` entries the follower is missing (none when
-        it is up to date, which makes it a heartbeat), the msg_id just before
-        them so the follower can check its log matches, and the leader's
-        commit index and epoch.
+        it is up to date, which makes it a heartbeat), the msg_id and epoch
+        of the entry just before them so the follower can check its log
+        matches, and the leader's commit index and epoch.
         """
         partition = self.partitions[name]
         start = min(self.follower_lengths[name][follower], len(partition))
+        prev = partition.entries[start - 1] if start > 0 else None
         return {
             "leader": self.id,
             "epoch": partition.epoch,
             "start": start,
-            "prev_msg_id": partition.entries[start - 1]["line"]["msg_id"] if start > 0 else None,
+            "prev_msg_id": prev["line"]["msg_id"] if prev else None,
+            "prev_epoch": prev["epoch"] if prev else None,
             "entries": partition.read_uncommitted(start)[:batch],
             "commit_index": partition.commit_index,
         }
@@ -92,9 +94,9 @@ class BrokerNode:
         """Update what `follower` is known to have from its reply to `message`.
 
         If it accepted, it now matches the leader up to the end of the
-        message. If not, the message didn't attach: resend from its length
-        if it is missing entries, or one entry earlier if the entry before
-        the message didn't match. Returns True if the commit index moved.
+        message. If not, the message didn't attach, and `length` is where the
+        follower asks the leader to resend from (never later than one entry
+        before this message). Returns True if the commit index moved.
         """
         start = message["start"]
         if accepted:
@@ -123,23 +125,29 @@ class BrokerNode:
             return True
         return False
 
-    def replicate(self, name, leader, epoch, start, entries, leader_commit, prev_msg_id=None, now=None):
+    def replicate(self, name, leader, epoch, start, entries, leader_commit,
+                  prev_msg_id=None, prev_epoch=None, now=None):
         """Store entries the leader sent and follow its commit index.
 
-        Returns (accepted, length). `accepted` is False when the entries
-        don't attach to this copy (some were lost on the way, or the entry
-        before them differs); the leader then resends from earlier. The
-        commit index only follows the leader up to the end of an accepted
-        message, since only that much is known to match.
+        Returns (accepted, length). When accepted, `length` is this copy's
+        new length. `accepted` is False when the entries don't attach to this
+        copy, and `length` is then where the leader should resend from: the
+        end of this log if entries are missing, or just after the committed
+        entries if the entry before the message differs (committed entries
+        always match the leader's). The commit index only follows the leader
+        up to the end of an accepted message, since only that much is known
+        to match.
         """
         partition = self._partition(name)
         if self.is_leader(name) or leader != self.leaders[name]:
             raise NotFollowerError(name, self.leaders[name])
         self.last_heard[name] = time.monotonic() if now is None else now
         try:
-            partition.replicate(start, entries, epoch, prev_msg_id)
+            partition.replicate(start, entries, epoch, prev_msg_id, prev_epoch)
         except GapError:
-            return False, len(partition)
+            if start > len(partition):
+                return False, len(partition)
+            return False, partition.commit_index + 1
         partition.follow_commit(leader_commit, verified_end=start + len(entries) - 1)
         return True, len(partition)
 

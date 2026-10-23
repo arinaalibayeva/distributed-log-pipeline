@@ -7,7 +7,15 @@ networking code, so it can be tested on its own.
 
 
 class StaleEpochError(Exception):
-    """Raised when a message comes from a leader with an older epoch."""
+    """Raised when a message comes from a leader with an older epoch.
+
+    `current` is this partition's epoch, so the sender can learn that a
+    newer leader has taken over.
+    """
+
+    def __init__(self, epoch, current):
+        super().__init__(f"epoch {epoch} is older than current epoch {current}")
+        self.current = current
 
 
 class GapError(Exception):
@@ -33,10 +41,15 @@ class Partition:
     def __len__(self):
         return len(self.entries)
 
+    @property
+    def last_epoch(self):
+        """The epoch of the last entry, or -1 for an empty log."""
+        return self.entries[-1]["epoch"] if self.entries else -1
+
     def set_epoch(self, epoch):
         """Move to a newer epoch, or raise StaleEpochError for an older one."""
         if epoch < self.epoch:
-            raise StaleEpochError(f"epoch {epoch} is older than current epoch {self.epoch}")
+            raise StaleEpochError(epoch, self.epoch)
         self.epoch = epoch
 
     def append(self, line, epoch=None):
@@ -60,15 +73,19 @@ class Partition:
         self.msg_ids[msg_id] = offset
         return offset
 
-    def replicate(self, start, entries, epoch, prev_msg_id=None):
+    def replicate(self, start, entries, epoch, prev_msg_id=None, prev_epoch=None):
         """Store entries copied from the leader, beginning at offset `start`.
 
         Followers use this instead of append(), so every copy keeps the
-        leader's offsets. `prev_msg_id` is the msg_id the leader has at
-        offset start - 1; checking it proves this log matches the leader's
-        up to `start`, so a follower never mistakes different lines at the
-        same offsets for its leader's. Entries this log already has (same
-        msg_id at the same offset) are skipped. An entry that differs from
+        leader's offsets. `prev_msg_id` and `prev_epoch` describe the entry
+        the leader has at offset start - 1. An entry is identified by its
+        msg_id and the epoch of the leader that wrote it: one leader writes
+        at most one entry per offset, so if the entry before `start` matches,
+        this log matches the leader's all the way up to `start`. Committed
+        entries are the same on every broker, so for those only the msg_id
+        is compared (a new leader may have stamped them with a newer epoch).
+
+        Entries this log already has are skipped. An entry that differs from
         an uncommitted one replaces it and everything after it, because the
         leader's log wins. Returns the new length.
 
@@ -83,25 +100,47 @@ class Partition:
             raise ValueError("entry offsets must run consecutively from start")
         if start > len(self.entries):
             raise GapError(f"log ends at offset {len(self.entries)}, entries start at {start}")
-        if start > 0 and self.entries[start - 1]["line"]["msg_id"] != prev_msg_id:
+        if start > 0 and not self._matches(start - 1, prev_msg_id, prev_epoch):
             raise GapError(f"entry at offset {start - 1} isn't the leader's")
         for entry in entries:
             offset = entry["offset"]
-            if offset < len(self.entries):
-                if self.entries[offset]["line"]["msg_id"] == entry["line"]["msg_id"]:
-                    continue
-                if offset <= self.commit_index:
-                    raise ConflictError(f"entry at committed offset {offset} differs from the leader's")
+            if offset <= self.commit_index and self.entries[offset]["line"]["msg_id"] != entry["line"]["msg_id"]:
+                raise ConflictError(f"entry at committed offset {offset} differs from the leader's")
 
         for entry in entries:
             offset = entry["offset"]
             if offset < len(self.entries):
-                if self.entries[offset]["line"]["msg_id"] == entry["line"]["msg_id"]:
+                if self._matches(offset, entry["line"]["msg_id"], entry["epoch"]):
+                    self.entries[offset]["epoch"] = entry["epoch"]
                     continue
                 self._truncate_from(offset)
-            self.entries.append({"offset": offset, "epoch": entry["epoch"], "line": entry["line"]})
-            self.msg_ids[entry["line"]["msg_id"]] = offset
+            self._add(entry)
         return len(self.entries)
+
+    def adopt(self, start, entries):
+        """Replace everything from offset `start` on with `entries`.
+
+        A new leader uses this to take over a longer log from another broker
+        before it starts serving. Only uncommitted entries can be replaced.
+        """
+        if not self.commit_index < start <= len(self.entries):
+            raise ValueError("can only replace uncommitted entries")
+        if [entry["offset"] for entry in entries] != list(range(start, start + len(entries))):
+            raise ValueError("entry offsets must run consecutively from start")
+        self._truncate_from(start)
+        for entry in entries:
+            self._add(entry)
+
+    def restamp(self, start, epoch):
+        """Mark every entry from offset `start` on as written in `epoch`.
+
+        A new leader does this to the uncommitted entries it inherits, so
+        they count as its own: it then commits them like new lines once a
+        majority has them, and no later leader can mistake them for an older,
+        abandoned history.
+        """
+        for entry in self.entries[start:]:
+            entry["epoch"] = epoch
 
     def follow_commit(self, leader_commit, verified_end=None):
         """Move the commit index up to the leader's, capped at what's known to match.
@@ -131,6 +170,17 @@ class Partition:
         committed were never acknowledged, so the new leader's log replaces them.
         """
         return self._truncate_from(self.commit_index + 1)
+
+    def _matches(self, offset, msg_id, epoch):
+        """Return True if the entry at `offset` is the one described."""
+        entry = self.entries[offset]
+        if entry["line"]["msg_id"] != msg_id:
+            return False
+        return offset <= self.commit_index or entry["epoch"] == epoch
+
+    def _add(self, entry):
+        self.entries.append({"offset": entry["offset"], "epoch": entry["epoch"], "line": entry["line"]})
+        self.msg_ids[entry["line"]["msg_id"]] = entry["offset"]
 
     def _truncate_from(self, offset):
         dropped = self.entries[offset:]

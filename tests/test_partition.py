@@ -180,7 +180,7 @@ def make_entry(n, offset=None, epoch=0, msg=None):
 def test_replicate_stores_entries_at_leader_offsets():
     p = Partition("login")
     assert p.replicate(0, [make_entry(0), make_entry(1)], epoch=0) == 2
-    assert p.replicate(2, [make_entry(2)], epoch=0, prev_msg_id="id-1") == 3
+    assert p.replicate(2, [make_entry(2)], epoch=0, prev_msg_id="id-1", prev_epoch=0) == 3
     assert [e["offset"] for e in p.read_uncommitted()] == [0, 1, 2]
     assert p.commit_index == -1
 
@@ -210,7 +210,7 @@ def test_replicate_skips_entries_it_already_has():
 def test_empty_replicate_is_a_heartbeat():
     p = Partition("login")
     p.replicate(0, [make_entry(0)], epoch=0)
-    assert p.replicate(1, [], epoch=0, prev_msg_id="id-0") == 1
+    assert p.replicate(1, [], epoch=0, prev_msg_id="id-0", prev_epoch=0) == 1
     assert p.replicate(0, [], epoch=0) == 1
 
 
@@ -300,3 +300,80 @@ def test_follow_commit_stops_at_the_verified_end():
     p.replicate(0, [make_entry(0), make_entry(1), make_entry(2)], epoch=0)
     p.follow_commit(10, verified_end=0)
     assert p.commit_index == 0
+
+
+def test_replicate_checks_the_epoch_of_the_entry_before_start():
+    # The same line can sit at the same offset in two different histories
+    # (a producer retried it to a new leader), so the msg_id alone isn't proof.
+    p = Partition("login")
+    p.replicate(0, [make_entry(0, epoch=1), make_entry(1, epoch=1)], epoch=1)
+    with pytest.raises(GapError):
+        p.replicate(2, [make_entry(2, epoch=2)], epoch=2, prev_msg_id="id-1", prev_epoch=2)
+    assert p.replicate(2, [make_entry(2, epoch=2)], epoch=2, prev_msg_id="id-1", prev_epoch=1) == 3
+
+
+def test_committed_entries_match_by_msg_id_alone():
+    p = Partition("login")
+    p.replicate(0, [make_entry(0, epoch=1), make_entry(1, epoch=1)], epoch=1)
+    p.commit(1)
+    assert p.replicate(2, [], epoch=3, prev_msg_id="id-1", prev_epoch=3) == 2
+
+
+def test_same_line_from_a_newer_epoch_replaces_an_uncommitted_entry():
+    p = Partition("login")
+    p.replicate(0, [make_entry(0, epoch=1), make_entry(1, epoch=1), make_entry(2, epoch=1)], epoch=1)
+    p.commit(0)
+    assert p.replicate(1, [make_entry(1, epoch=2)], epoch=2, prev_msg_id="id-0", prev_epoch=1) == 2
+    assert [(e["line"]["msg_id"], e["epoch"]) for e in p.read_uncommitted()] == [("id-0", 1), ("id-1", 2)]
+
+
+def test_committed_entry_takes_the_leaders_newer_epoch():
+    p = Partition("login")
+    p.replicate(0, [make_entry(0, epoch=1), make_entry(1, epoch=1)], epoch=1)
+    p.commit(1)
+    assert p.replicate(1, [make_entry(1, epoch=2)], epoch=2, prev_msg_id="id-0", prev_epoch=1) == 2
+    assert [e["epoch"] for e in p.read_uncommitted()] == [1, 2]
+    assert p.commit_index == 1
+
+
+def test_stale_epoch_error_reports_the_current_epoch():
+    p = Partition("login")
+    p.set_epoch(4)
+    with pytest.raises(StaleEpochError) as info:
+        p.set_epoch(2)
+    assert info.value.current == 4
+
+
+def test_last_epoch():
+    p = Partition("login")
+    assert p.last_epoch == -1
+    p.replicate(0, [make_entry(0, epoch=1), make_entry(1, epoch=3)], epoch=3)
+    assert p.last_epoch == 3
+
+
+def test_adopt_replaces_the_uncommitted_tail():
+    p = Partition("login")
+    p.replicate(0, [make_entry(0), make_entry(1, msg="mine-1")], epoch=0)
+    p.commit(0)
+    p.adopt(1, [make_entry(1, epoch=1), make_entry(2, epoch=1)])
+    assert [e["line"]["msg_id"] for e in p.read_uncommitted()] == ["id-0", "id-1", "id-2"]
+    assert "mine-1" not in p.msg_ids
+    assert p.append(make_line(2)) == 2
+
+
+def test_adopt_never_replaces_committed_entries():
+    p = Partition("login")
+    p.replicate(0, [make_entry(0), make_entry(1)], epoch=0)
+    p.commit(0)
+    with pytest.raises(ValueError):
+        p.adopt(0, [make_entry(0, msg="other")])
+    with pytest.raises(ValueError):
+        p.adopt(3, [make_entry(3)])
+    assert len(p) == 2
+
+
+def test_restamp_marks_the_tail_with_a_new_epoch():
+    p = Partition("login")
+    p.replicate(0, [make_entry(0), make_entry(1), make_entry(2)], epoch=0)
+    p.restamp(1, 5)
+    assert [e["epoch"] for e in p.read_uncommitted()] == [0, 5, 5]

@@ -50,6 +50,7 @@ class ReplicateRequest(BaseModel):
     epoch: int = Field(ge=0)
     start: int = Field(ge=0)
     prev_msg_id: str | None = None
+    prev_epoch: int | None = None
     entries: list[Entry]
     commit_index: int = Field(ge=-1)
 
@@ -97,7 +98,9 @@ def create_app(broker_id, brokers=config.BROKERS, interval=0.2, batch=500, ack_t
 
     @app.exception_handler(StaleEpochError)
     async def stale_epoch(request, exc):
-        return JSONResponse(status_code=409, content={"error": "stale_epoch", "detail": str(exc)})
+        return JSONResponse(
+            status_code=409, content={"error": "stale_epoch", "epoch": exc.current, "detail": str(exc)},
+        )
 
     @app.exception_handler(ConflictError)
     async def conflict(request, exc):
@@ -127,7 +130,7 @@ def create_app(broker_id, brokers=config.BROKERS, interval=0.2, batch=500, ack_t
         try:
             accepted, length = node.replicate(
                 name, request.leader, request.epoch, request.start, entries,
-                request.commit_index, request.prev_msg_id,
+                request.commit_index, request.prev_msg_id, request.prev_epoch,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
