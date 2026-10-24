@@ -37,6 +37,18 @@
            border: 1px solid currentColor; background: transparent; cursor: pointer; }
   button.kill { color: var(--bad); }
   button.restart { color: var(--ok); }
+  button.cut { color: var(--warn); }
+  .network { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 16px; padding: 10px;
+             background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+  .network .label { font-weight: 600; }
+  .seg { display: flex; }
+  .seg button { color: var(--text); border-color: var(--line); border-radius: 0; margin-left: -1px; }
+  .seg button:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }
+  .seg button:last-child { border-radius: 0 6px 6px 0; }
+  .seg button.active, .seg button.active:hover { background: var(--text); color: var(--bg); border-color: var(--text); }
+  .pill.cutoff { color: var(--warn); }
+  .links { font-size: 12px; color: var(--warn); min-height: 1em; }
+  .trouble { color: var(--warn); font-weight: 600; }
   button:hover:not(:disabled) { background: var(--bg); }
   button:disabled { color: var(--muted); opacity: 0.5; cursor: default; }
   .cell.leader { border: 2px solid var(--leader); }
@@ -66,6 +78,13 @@
     <h1>Distributed log pipeline</h1>
     <span class="muted" id="status">connecting…</span>
   </header>
+  <section class="network">
+    <span class="label">Network</span>
+    <span class="muted">Lose messages between brokers:</span>
+    <div class="seg" id="drop"></div>
+    <button class="restart" id="heal">Heal network</button>
+    <span class="muted" id="netstatus"></span>
+  </section>
   <div class="grid">
     <div class="corner"></div>
     <div class="contents" id="heads"></div>
@@ -75,6 +94,8 @@
     Each cell is one broker's copy of a partition: length, commit index (highest committed offset) and its last lines.
     The leader's cell has a blue border, copies behind the leader are amber, and faded lines aren't committed yet.
     Kill stops a broker at once and loses its log; Restart brings it back empty.
+    Cut off loses every message between that broker and the others (producers can still reach it), and the drop
+    buttons lose that share of all messages between brokers. Heal network undoes both.
   </footer>
 </main>
 <script>
@@ -82,6 +103,7 @@ const heads = document.getElementById("heads");
 const rows = document.getElementById("rows");
 const statusText = document.getElementById("status");
 const TAIL = 3;
+const DROP_RATES = [0, 0.1, 0.3, 0.5];
 // Broker headers are built once and updated in place: rebuilding a button
 // every second would drop clicks that land during a redraw.
 const headers = {};
@@ -104,6 +126,23 @@ function leaderOf(name, brokers) {
   return best;
 }
 
+async function post(path, body) {
+  await fetch(path, {
+    method: "POST",
+    headers: body ? { "content-type": "application/json" } : {},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+}
+
+// The network bar is built once, like the broker headers.
+const dropButtons = DROP_RATES.map(rate => {
+  const button = el("button", "", `${Math.round(rate * 100)}%`);
+  button.onclick = async () => { await post("/chaos/drop", { rate }); refresh(); };
+  document.getElementById("drop").append(button);
+  return button;
+});
+document.getElementById("heal").onclick = async () => { await post("/chaos/heal"); refresh(); };
+
 async function control(id, action, button) {
   button.disabled = true;
   button.textContent = action === "kill" ? "Killing…" : "Starting…";
@@ -124,20 +163,47 @@ function brokerHeader(id) {
   kill.onclick = () => control(id, "kill", kill);
   const restart = el("button", "restart", "Restart");
   restart.onclick = () => control(id, "restart", restart);
+  const processButtons = el("span", "buttons");
+  processButtons.append(kill, restart);
+  const cut = el("button", "cut", "Cut off");
+  cut.onclick = async () => { await post(`/chaos/cut-off/${id}`); refresh(); };
   const buttons = el("div", "buttons");
-  buttons.append(kill, restart);
-  head.append(title, buttons);
+  buttons.append(processButtons, cut);
+  const links = el("div", "links");
+  head.append(title, buttons, links);
   heads.append(head);
-  return { pill, kill, restart, buttons };
+  return { pill, kill, restart, cut, processButtons, links };
 }
 
-function updateHeader(id, state, controls) {
+// A broker is cut off when it loses messages to every other broker.
+function isCutOff(id, state, ids) {
+  return !!state && ids.every(other => other === id || state.chaos.blocked.includes(Number(other)));
+}
+
+function updateHeader(id, state, controls, ids) {
   const header = headers[id] || (headers[id] = brokerHeader(id));
-  header.pill.className = "pill " + (state ? "up" : "down");
-  header.pill.textContent = state ? "up" : "down";
-  header.buttons.hidden = !controls;
+  const cutOff = isCutOff(id, state, ids);
+  header.pill.className = "pill " + (!state ? "down" : cutOff ? "cutoff" : "up");
+  header.pill.textContent = !state ? "down" : cutOff ? "cut off" : "up";
+  header.processButtons.hidden = !controls;
   if (!header.kill.textContent.endsWith("…")) header.kill.disabled = !state;
   if (!header.restart.textContent.endsWith("…")) header.restart.disabled = !!state;
+  header.cut.disabled = !state || cutOff;
+  const blocked = state && !cutOff ? state.chaos.blocked : [];
+  header.links.textContent = blocked.length ? `not reaching broker ${blocked.join(", ")}` : "";
+}
+
+function updateNetwork(brokers, ids) {
+  const up = ids.filter(id => brokers[id]);
+  const rate = Math.max(0, ...up.map(id => brokers[id].chaos.drop_rate));
+  dropButtons.forEach((button, i) => button.classList.toggle("active", DROP_RATES[i] === rate));
+  const cut = up.filter(id => isCutOff(id, brokers[id], ids));
+  const trouble = [];
+  if (rate) trouble.push(`losing ${Math.round(rate * 100)}% of messages`);
+  if (cut.length) trouble.push(`broker ${cut.join(", ")} cut off`);
+  const status = document.getElementById("netstatus");
+  status.textContent = trouble.length ? trouble.join(" · ") : "healthy";
+  status.className = trouble.length ? "trouble" : "muted";
 }
 
 function copyCell(copy, leader, isLeader) {
@@ -161,7 +227,8 @@ function copyCell(copy, leader, isLeader) {
 
 function render(data) {
   const ids = Object.keys(data.brokers);
-  for (const id of ids) updateHeader(id, data.brokers[id], data.controls);
+  for (const id of ids) updateHeader(id, data.brokers[id], data.controls, ids);
+  updateNetwork(data.brokers, ids);
   const cells = [];
   for (const name of data.partitions) {
     const leader = leaderOf(name, data.brokers);

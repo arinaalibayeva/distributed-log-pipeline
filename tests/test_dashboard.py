@@ -62,3 +62,32 @@ def test_restart_of_a_running_broker_keeps_it(processes):
     processes.start(1)
     assert processes.processes[1] is first
     wait_until(lambda: processes.is_running(1))
+
+
+def chaos_of(cluster):
+    return {b: cluster.apps[b].state.chaos.settings() for b in cluster.brokers}
+
+
+def test_cut_off_blocks_both_directions_and_heal_undoes_it(cluster):
+    with TestClient(create_app(brokers=cluster.brokers)) as client:
+        reply = client.post("/chaos/cut-off/2").json()
+        assert reply["brokers"]["2"] == {"blocked": [1, 3], "drop_rate": 0.0}
+        assert chaos_of(cluster) == {
+            1: {"blocked": [2], "drop_rate": 0.0},
+            2: {"blocked": [1, 3], "drop_rate": 0.0},
+            3: {"blocked": [2], "drop_rate": 0.0},
+        }
+        client.post("/chaos/cut-off/3")  # adds to what broker 1 already blocks
+        assert chaos_of(cluster)[1] == {"blocked": [2, 3], "drop_rate": 0.0}
+        client.post("/chaos/heal")
+        assert all(c == {"blocked": [], "drop_rate": 0.0} for c in chaos_of(cluster).values())
+
+
+def test_drop_rate_is_set_on_every_broker_and_skips_dead_ones(cluster):
+    cluster.stop(3)
+    with TestClient(create_app(brokers=cluster.brokers)) as client:
+        reply = client.post("/chaos/drop", json={"rate": 0.3}).json()
+        assert reply["brokers"]["3"] is None
+        assert client.post("/chaos/drop", json={"rate": 2}).status_code == 422
+        assert client.post("/chaos/cut-off/9").status_code == 404
+    assert [cluster.apps[b].state.chaos.drop_rate for b in (1, 2)] == [0.3, 0.3]

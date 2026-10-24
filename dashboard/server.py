@@ -4,13 +4,18 @@
 
 It starts the three brokers itself, so it can kill one (like a crash: the
 process dies and its in-memory log is gone) and start it again. Stopping the
-dashboard stops the brokers it started.
+dashboard stops the brokers it started. It can also make brokers lose the
+messages they send each other (see broker/chaos.py), setting every broker
+so that, for example, a cut-off broker is cut off in both directions.
 
 Endpoints:
     GET  /                      the page (dashboard/index.html)
     GET  /cluster               every broker's /state, or null for a broker that doesn't answer
     POST /brokers/{id}/kill     kill a broker's process
     POST /brokers/{id}/restart  start a broker again (it comes back empty)
+    POST /chaos/cut-off/{id}    lose every message between that broker and the others
+    POST /chaos/drop            lose a share of all messages between brokers: {"rate": 0.3}
+    POST /chaos/heal            stop losing messages
 """
 
 import asyncio
@@ -24,6 +29,7 @@ import httpx
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field
 
 from broker import config
 
@@ -74,6 +80,10 @@ class BrokerProcesses:
             self.kill(broker_id)
 
 
+class DropRate(BaseModel):
+    rate: float = Field(ge=0, le=1)
+
+
 def create_app(brokers=config.BROKERS, processes=None):
     """Build the dashboard app.
 
@@ -100,6 +110,20 @@ def create_app(brokers=config.BROKERS, processes=None):
         except (httpx.HTTPError, ValueError):
             return None
 
+    async def admin(broker_id, path, body=None):
+        """Send a chaos setting to one broker; return its settings, or None if it's down."""
+        try:
+            response = await app.state.http.post(f"{brokers[broker_id]}/admin/{path}", json=body)
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPError:
+            return None
+
+    async def admin_all(path, body_for):
+        ids = list(brokers)
+        replies = await asyncio.gather(*(admin(b, path, body_for(b)) for b in ids))
+        return {"brokers": dict(zip(ids, replies))}
+
     def known_broker(broker_id):
         if broker_id not in brokers:
             raise HTTPException(status_code=404, detail=f"no broker {broker_id}")
@@ -119,6 +143,28 @@ def create_app(brokers=config.BROKERS, processes=None):
             "brokers": {b: state for b, state in zip(ids, states)},
             "controls": processes is not None,
         }
+
+    @app.post("/chaos/cut-off/{broker_id}")
+    async def cut_off(broker_id: int):
+        if broker_id not in brokers:
+            raise HTTPException(status_code=404, detail=f"no broker {broker_id}")
+        states = dict(zip(brokers, await asyncio.gather(*(fetch_state(b) for b in brokers))))
+
+        def blocked(b):
+            if b == broker_id:
+                return {"blocked": [o for o in brokers if o != b]}
+            already = states[b]["chaos"]["blocked"] if states[b] else []
+            return {"blocked": sorted(set(already) | {broker_id})}
+
+        return await admin_all("chaos", blocked)
+
+    @app.post("/chaos/drop")
+    async def drop(setting: DropRate):
+        return await admin_all("chaos", lambda b: {"drop_rate": setting.rate})
+
+    @app.post("/chaos/heal")
+    async def heal():
+        return await admin_all("heal", lambda b: None)
 
     @app.post("/brokers/{broker_id}/kill")
     async def kill(broker_id: int):
