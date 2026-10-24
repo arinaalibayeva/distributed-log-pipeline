@@ -4,8 +4,9 @@
 
 For every partition it shows each broker's copy: its length and, in
 brackets, its commit index. `*` marks the leader, and copies behind the
-leader say how many lines they're missing. A broker that doesn't answer is
-shown as DOWN.
+leader say how many lines they're missing. The end of the row names the
+leader and its epoch, which goes up by one with every takeover. A broker
+that doesn't answer is shown as DOWN.
 """
 
 import sys
@@ -32,6 +33,20 @@ def fetch_states(http, brokers=config.BROKERS):
     return states
 
 
+def leader_of(states, name):
+    """Return (broker ID, epoch) of `name`'s leader, or None if no broker leads it.
+
+    If two brokers say they lead (an old leader that hasn't heard of the
+    takeover yet), the one with the newer epoch is the real leader.
+    """
+    leading = [(state["partitions"][name]["epoch"], b) for b, state in states.items()
+               if state and state["partitions"][name]["role"] == "leader"]
+    if not leading:
+        return None
+    epoch, broker_id = max(leading)
+    return broker_id, epoch
+
+
 def render(states, partitions=config.PARTITIONS, now=None):
     now = now or datetime.now()
     ids = list(states)
@@ -39,20 +54,20 @@ def render(states, partitions=config.PARTITIONS, now=None):
     lines.append(" " * 10 + "".join(f"broker {b}".ljust(COLUMN) for b in ids))
     lines.append(" " * 10 + "".join(("up" if states[b] else "DOWN").ljust(COLUMN) for b in ids))
     for name in partitions:
-        leader = config.initial_leader(name)
-        leader_state = states.get(leader)
-        leader_length = leader_state["partitions"][name]["length"] if leader_state else None
+        leader = leader_of(states, name)
+        leader_length = states[leader[0]]["partitions"][name]["length"] if leader else None
         cells = []
         for b in ids:
             if states[b] is None:
                 cells.append("-")
                 continue
             copy = states[b]["partitions"][name]
-            cell = f"{'*' if copy['role'] == 'leader' else ' '}{copy['length']} [{copy['commit_index']}]"
+            cell = f"{'*' if leader and b == leader[0] else ' '}{copy['length']} [{copy['commit_index']}]"
             if leader_length is not None and copy["length"] < leader_length:
                 cell += f" -{leader_length - copy['length']}"
             cells.append(cell)
-        lines.append(name.ljust(10) + "".join(cell.ljust(COLUMN) for cell in cells))
+        summary = f"leader {leader[0]}, epoch {leader[1]}" if leader else "no leader"
+        lines.append(name.ljust(10) + "".join(cell.ljust(COLUMN) for cell in cells) + summary)
     lines += ["", "* leader   length [commit index]   -N lines behind the leader"]
     return "\n".join(lines)
 
