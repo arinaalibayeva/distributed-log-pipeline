@@ -10,6 +10,9 @@ Endpoints:
     POST /partitions/{name}/replicate   entries copied from the leader (followers only)
     POST /partitions/{name}/takeover    another broker asks to take over the partition
     GET  /state                         summary of every partition, for the dashboard
+    GET  /admin/chaos                   which messages to other brokers are being lost
+    POST /admin/chaos                   lose messages to some brokers, or a share of all (see chaos.py)
+    POST /admin/heal                    stop losing messages
 
 A request for a partition this broker doesn't lead gets a 421 response with
 the leader's ID (null while it knows no leader), so the client can retry
@@ -28,6 +31,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from broker import config
+from broker.chaos import Chaos, ChaosTransport
 from broker.node import BrokerNode, NotFollowerError, NotLeaderError, UnknownPartitionError
 from broker.partition import ConflictError, StaleEpochError
 from broker.replication import Replicator
@@ -58,6 +62,11 @@ class ReplicateRequest(BaseModel):
     commit_index: int = Field(ge=-1)
 
 
+class ChaosSettings(BaseModel):
+    blocked: list[int] | None = None
+    drop_rate: float | None = Field(None, ge=0, le=1)
+
+
 class TakeoverRequest(BaseModel):
     candidate: int
     epoch: int = Field(ge=1)
@@ -74,9 +83,12 @@ def create_app(broker_id, brokers=config.BROKERS, interval=0.2, batch=500, ack_t
     waits for its line to be committed before giving up with a 503.
     `leader_timeout` and `stagger` set when a follower takes over from a
     quiet leader (see BrokerNode). `transport` replaces the HTTP transport
-    used to reach other brokers, for tests.
+    used to reach other brokers, for tests; messages still pass through the
+    chaos controls first.
     """
     node = BrokerNode(broker_id, list(brokers), leader_timeout=leader_timeout, stagger=stagger)
+    chaos = Chaos()
+    transport = ChaosTransport(chaos, brokers, inner=transport)
     replicator = Replicator(node, brokers, interval=interval, batch=batch, transport=transport)
     takeover = Takeover(node, replicator, brokers, transport=transport)
 
@@ -91,6 +103,7 @@ def create_app(broker_id, brokers=config.BROKERS, interval=0.2, batch=500, ack_t
     app = FastAPI(title=f"broker {broker_id}", lifespan=lifespan)
     app.state.node = node
     app.state.replicator = replicator
+    app.state.chaos = chaos
 
     # Handlers are `async def` and only await outside the code that changes a
     # partition, so changes happen one at a time on the event loop.
@@ -161,7 +174,25 @@ def create_app(broker_id, brokers=config.BROKERS, interval=0.2, batch=500, ack_t
 
     @app.get("/state")
     async def state():
-        return node.state()
+        return {**node.state(), "chaos": chaos.settings()}
+
+    @app.get("/admin/chaos")
+    async def get_chaos():
+        return chaos.settings()
+
+    @app.post("/admin/chaos")
+    async def set_chaos(settings: ChaosSettings):
+        if settings.blocked is not None and not set(settings.blocked) <= set(node.peers):
+            raise HTTPException(status_code=400, detail=f"can only block other brokers: {node.peers}")
+        chaos.update(settings.blocked, settings.drop_rate)
+        print(f"chaos: {chaos.settings()}", flush=True)
+        return chaos.settings()
+
+    @app.post("/admin/heal")
+    async def heal():
+        chaos.heal()
+        print("chaos: healed", flush=True)
+        return chaos.settings()
 
     return app
 
