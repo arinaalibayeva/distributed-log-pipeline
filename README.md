@@ -13,11 +13,8 @@ Working now:
 - **Producers:** buffer each line and retry until the leader acknowledges it. Retries reuse the `msg_id`, so a line is never stored twice.
 - **Alert consumer:** prints an alert when one service logs 3 errors within 5 seconds, using each line's own timestamp.
 - **Archive consumer:** writes every line to a file per partition.
-- **Dashboard:** a web page showing every broker's copy of each partition live, with buttons to kill and restart brokers.
-
-Not yet built:
-
-- Controls for dropping messages and cutting brokers off from each other while the cluster runs (the tests can already cut brokers off).
+- **Dashboard:** a web page showing every broker's copy of each partition live, with buttons to kill and restart brokers, cut a broker off from the others, and lose a share of the messages between brokers.
+- **Failure controls:** the same failures from the terminal with `scripts/chaos.py`.
 
 ## Running it
 
@@ -33,7 +30,24 @@ Alerts print in the terminal. Process logs go to `data/logs/` and archived lines
 
 The brokers choose their first leaders in the first couple of seconds; producers hold their lines until then.
 
-Open the dashboard at http://127.0.0.1:8000. Each cell is one broker's copy of a partition: its role and epoch, its length, commit index and last lines. The leader has a blue border and copies that are behind are amber. **Kill** stops a broker at once (its log is lost) and **Restart** brings it back empty, to catch up from the leader. Kill a leader to watch another broker take over: the blue border moves and the epoch goes up.
+Open the dashboard at http://127.0.0.1:8000. Each cell is one broker's copy of a partition: its role and epoch, its length, commit index and last lines. The leader has a blue border and copies that are behind are amber.
+
+Things to try on the dashboard:
+
+- **Kill** a follower: the partition keeps committing on the other two brokers. **Restart** brings it back empty, and it catches up.
+- **Kill** a leader: within about 2 seconds another broker takes over, the blue border moves and the epoch goes up.
+- **Cut off** a leader: it stops committing and steps down, and the other two brokers carry on. **Heal network** and it rejoins as a follower. Producers can still reach a cut-off broker, so this also shows the cluster refusing to acknowledge lines it can't store on a majority.
+- Set the drop rate to **30%**: brokers lose that share of the messages they send each other, yet every copy stays the same.
+
+The same controls from a terminal:
+
+```bash
+python scripts/chaos.py status
+python scripts/chaos.py kill 2          # or: restart 2
+python scripts/chaos.py cut-off 1
+python scripts/chaos.py drop 30%
+python scripts/chaos.py heal
+```
 
 For a terminal view instead, run this in a second terminal:
 
@@ -49,15 +63,15 @@ It shows every broker's copy of each partition (length and commit index), which 
 pytest
 ```
 
-The tests run three real brokers in the test process. `tests/test_failures.py` cuts brokers off from each other and crashes leaders under constant writes, then checks that every acknowledged line is stored exactly once and all copies agree.
+The tests run three real brokers in the test process. `tests/test_failures.py` and `tests/test_chaos.py` cut brokers off from each other, lose 30% of the messages between them, and crash leaders under constant writes, then check that every acknowledged line is stored exactly once and all copies agree.
 
 ## Layout
 
 ```
-broker/      partition log, broker logic, replication, leader takeover, HTTP server, cluster client, config
+broker/      partition log, broker logic, replication, leader takeover, failure injection, HTTP server, cluster client, config
 producer/    simulated service that sends log lines
 consumers/   alert detector, alert consumer, archive consumer
 dashboard/   web page and the server that runs it (it also starts the brokers)
-scripts/     start_cluster.sh, watch.py
+scripts/     start_cluster.sh, watch.py, chaos.py
 tests/       unit tests and integration tests against three real brokers
 ```
