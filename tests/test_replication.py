@@ -1,41 +1,15 @@
 """Replication across three live brokers, checked against the guarantees.
 
-After each scenario, check_invariants() verifies what the system promises:
-every acknowledged line is stored exactly once on the leader, no copy holds
-a msg_id twice, and every copy agrees with the leader up to its commit index.
+After each scenario, check_invariants() (in conftest.py) verifies what the
+system promises. Network partitions and repeated crashes are in
+test_failures.py.
 """
 
 import pytest
 
 from broker.client import NoLeaderAvailable
-from conftest import LocalCluster, make_line, send, wait_until
+from conftest import LocalCluster, check_invariants, make_line, send, wait_for_copies, wait_until
 from producer.producer import Producer
-
-
-def check_invariants(cluster, partition, leader, acked, brokers=(1, 2, 3)):
-    leader_entries = cluster.entries(leader, partition)
-    leader_ids = [e["line"]["msg_id"] for e in leader_entries]
-    for msg_id in acked:
-        assert leader_ids.count(msg_id) == 1, f"acked line {msg_id} stored {leader_ids.count(msg_id)} times"
-    for broker_id in brokers:
-        entries = cluster.entries(broker_id, partition)
-        ids = [e["line"]["msg_id"] for e in entries]
-        assert len(ids) == len(set(ids)), f"broker {broker_id} holds a msg_id twice"
-        committed = cluster.node(broker_id).partitions[partition].commit_index
-        assert entries[:committed + 1] == leader_entries[:committed + 1], (
-            f"broker {broker_id} disagrees with the leader below its commit index"
-        )
-
-
-def wait_for_copies(cluster, partition, length, brokers=(1, 2, 3)):
-    """Wait until every broker holds `length` entries and has committed them all."""
-    def caught_up():
-        return all(
-            len(cluster.entries(b, partition)) == length
-            and cluster.node(b).partitions[partition].commit_index == length - 1
-            for b in brokers
-        )
-    wait_until(caught_up, message=f"{partition} to reach {length} committed entries on {brokers}")
 
 
 def produce(cluster, service, numbers):

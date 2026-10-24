@@ -3,7 +3,9 @@
 Each broker is a real uvicorn server on a free port, in its own thread, so
 tests exercise the actual HTTP and replication code. Tests can stop a broker
 (it refuses connections) and start it again with an empty log, like a crashed
-broker coming back. Clients can count their requests and lose replies.
+broker coming back. Clients can count their requests and lose replies, and
+tests can cut a broker off from the other brokers (a network partition)
+while producers and consumers can still reach it.
 
 The cluster uses short timeouts so takeovers happen within a second, and it
 waits at startup until each partition is led by the first broker in its
@@ -52,6 +54,8 @@ class LocalCluster:
     def __init__(self, **app_options):
         self.brokers = {b: f"http://127.0.0.1:{free_port()}" for b in config.BROKERS}
         self.options = {"interval": 0.05, "ack_timeout": 0.5, "leader_timeout": 0.3, "stagger": 0.2, **app_options}
+        self.broker_at = {int(url.rsplit(":", 1)[1]): b for b, url in self.brokers.items()}
+        self.blocked = set()  # (from broker, to broker) pairs whose messages are lost
         self.apps = {}
         self.servers = {}
         self.threads = {}
@@ -69,7 +73,7 @@ class LocalCluster:
         self._wait_started(broker_id)
 
     def _launch(self, broker_id):
-        app = create_app(broker_id, brokers=self.brokers, **self.options)
+        app = create_app(broker_id, brokers=self.brokers, transport=NetworkTransport(self, broker_id), **self.options)
         port = int(self.brokers[broker_id].rsplit(":", 1)[1])
         server = uvicorn.Server(uvicorn.Config(
             app, host="127.0.0.1", port=port, log_level="warning", timeout_graceful_shutdown=1,
@@ -93,6 +97,15 @@ class LocalCluster:
     def stop_all(self):
         for broker_id in list(self.servers):
             self.stop(broker_id)
+
+    def cut_off(self, broker_id):
+        """Lose every message between `broker_id` and the other brokers."""
+        for other in self.brokers:
+            if other != broker_id:
+                self.blocked |= {(broker_id, other), (other, broker_id)}
+
+    def heal(self):
+        self.blocked.clear()
 
     def node(self, broker_id):
         return self.apps[broker_id].state.node
@@ -119,6 +132,24 @@ class LocalCluster:
     def entries(self, broker_id, partition):
         """Return a copy of every entry broker `broker_id` stores for `partition`."""
         return list(self.node(broker_id).partitions[partition].entries)
+
+
+class NetworkTransport(httpx.AsyncBaseTransport):
+    """How one broker reaches the others: fails messages the cluster has blocked."""
+
+    def __init__(self, cluster, source):
+        self.cluster = cluster
+        self.source = source
+        self.inner = httpx.AsyncHTTPTransport()
+
+    async def handle_async_request(self, request):
+        target = self.cluster.broker_at[request.url.port]
+        if (self.source, target) in self.cluster.blocked:
+            raise httpx.ConnectError("network partition", request=request)
+        return await self.inner.handle_async_request(request)
+
+    async def aclose(self):
+        await self.inner.aclose()
 
 
 class TestTransport(httpx.HTTPTransport):
@@ -168,3 +199,35 @@ def make_line(n, service="login", level="INFO", ts=None):
 def send(client, line):
     """Append `line` through the cluster; returns once it is committed."""
     return client.call(line["service"], "POST", f"/partitions/{line['service']}/append", json=line)
+
+
+def check_invariants(cluster, partition, leader, acked, brokers=(1, 2, 3)):
+    """Check what the system promises, on the copies of `brokers`.
+
+    Every acknowledged line is stored exactly once on the leader, no copy
+    holds a msg_id twice, and every copy agrees with the leader up to its
+    commit index.
+    """
+    leader_entries = cluster.entries(leader, partition)
+    leader_ids = [e["line"]["msg_id"] for e in leader_entries]
+    for msg_id in acked:
+        assert leader_ids.count(msg_id) == 1, f"acked line {msg_id} stored {leader_ids.count(msg_id)} times"
+    for broker_id in brokers:
+        entries = cluster.entries(broker_id, partition)
+        ids = [e["line"]["msg_id"] for e in entries]
+        assert len(ids) == len(set(ids)), f"broker {broker_id} holds a msg_id twice"
+        committed = cluster.node(broker_id).partitions[partition].commit_index
+        assert entries[:committed + 1] == leader_entries[:committed + 1], (
+            f"broker {broker_id} disagrees with the leader below its commit index"
+        )
+
+
+def wait_for_copies(cluster, partition, length, brokers=(1, 2, 3)):
+    """Wait until every broker holds `length` entries and has committed them all."""
+    def caught_up():
+        return all(
+            len(cluster.entries(b, partition)) == length
+            and cluster.node(b).partitions[partition].commit_index == length - 1
+            for b in brokers
+        )
+    wait_until(caught_up, message=f"{partition} to reach {length} committed entries on {brokers}")
