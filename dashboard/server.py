@@ -10,10 +10,11 @@ so that, for example, a cut-off broker is cut off in both directions.
 
 Endpoints:
     GET  /                      the page (dashboard/index.html)
-    GET  /cluster               every broker's /state, or null for a broker that doesn't answer
+    GET  /cluster               every broker's /state (null if it doesn't answer) and whether its process runs
     POST /brokers/{id}/kill     kill a broker's process
     POST /brokers/{id}/restart  start a broker again (it comes back empty)
     POST /chaos/cut-off/{id}    lose every message between that broker and the others
+    POST /chaos/reconnect/{id}  undo cut-off for that broker only
     POST /chaos/drop            lose a share of all messages between brokers: {"rate": 0.3}
     POST /chaos/heal            stop losing messages
 """
@@ -53,6 +54,10 @@ class BrokerProcesses:
     def is_running(self, broker_id):
         process = self.processes.get(broker_id)
         return process is not None and process.poll() is None
+
+    def statuses(self):
+        """{broker ID: "running" or "stopped"}."""
+        return {b: "running" if self.is_running(b) else "stopped" for b in self.broker_ids}
 
     def start(self, broker_id):
         """Start a broker unless it is already running."""
@@ -102,6 +107,7 @@ def create_app(brokers=config.BROKERS, processes=None):
         await app.state.http.aclose()
 
     app = FastAPI(title="dashboard", lifespan=lifespan)
+    app.state.cut_off = set()  # brokers cut off from the others, until reconnected or healed
 
     async def fetch_state(broker_id):
         try:
@@ -141,22 +147,42 @@ def create_app(brokers=config.BROKERS, processes=None):
         return {
             "partitions": config.PARTITIONS,
             "brokers": {b: state for b, state in zip(ids, states)},
+            # A broker whose process runs but doesn't answer is unreachable
+            # (starting up, or hung) rather than stopped.
+            "processes": processes.statuses() if processes is not None else None,
+            "cut_off": sorted(app.state.cut_off),
             "controls": processes is not None,
         }
 
-    @app.post("/chaos/cut-off/{broker_id}")
-    async def cut_off(broker_id: int):
+    def check_broker(broker_id):
         if broker_id not in brokers:
             raise HTTPException(status_code=404, detail=f"no broker {broker_id}")
-        states = dict(zip(brokers, await asyncio.gather(*(fetch_state(b) for b in brokers))))
+
+    async def apply_cut_offs():
+        """Set every broker's blocked list from the brokers that were cut off.
+
+        The dashboard remembers which brokers it cut off: with two cut off,
+        the third blocks everyone too, so the brokers' settings alone can't
+        say which ones were meant to be cut off.
+        """
+        cut = app.state.cut_off
 
         def blocked(b):
-            if b == broker_id:
-                return {"blocked": [o for o in brokers if o != b]}
-            already = states[b]["chaos"]["blocked"] if states[b] else []
-            return {"blocked": sorted(set(already) | {broker_id})}
+            return {"blocked": [o for o in brokers if o != b and (b in cut or o in cut)]}
 
         return await admin_all("chaos", blocked)
+
+    @app.post("/chaos/cut-off/{broker_id}")
+    async def cut_off(broker_id: int):
+        check_broker(broker_id)
+        app.state.cut_off.add(broker_id)
+        return await apply_cut_offs()
+
+    @app.post("/chaos/reconnect/{broker_id}")
+    async def reconnect(broker_id: int):
+        check_broker(broker_id)
+        app.state.cut_off.discard(broker_id)
+        return await apply_cut_offs()
 
     @app.post("/chaos/drop")
     async def drop(setting: DropRate):
@@ -164,6 +190,7 @@ def create_app(brokers=config.BROKERS, processes=None):
 
     @app.post("/chaos/heal")
     async def heal():
+        app.state.cut_off.clear()
         return await admin_all("heal", lambda b: None)
 
     @app.post("/brokers/{broker_id}/kill")

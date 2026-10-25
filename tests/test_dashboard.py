@@ -91,3 +91,35 @@ def test_drop_rate_is_set_on_every_broker_and_skips_dead_ones(cluster):
         assert client.post("/chaos/drop", json={"rate": 2}).status_code == 422
         assert client.post("/chaos/cut-off/9").status_code == 404
     assert [cluster.apps[b].state.chaos.drop_rate for b in (1, 2)] == [0.3, 0.3]
+
+
+def test_cluster_reports_whether_each_process_runs(processes):
+    with TestClient(create_app(brokers={1: "http://127.0.0.1:1", 2: "http://127.0.0.1:2", 3: "http://127.0.0.1:3"},
+                               processes=processes)) as client:
+        client.post("/brokers/3/kill")
+        data = client.get("/cluster").json()
+    # No broker answers here, so 1 and 2 are running but unreachable, and 3 is stopped.
+    assert data["processes"] == {"1": "running", "2": "running", "3": "stopped"}
+    assert data["brokers"] == {"1": None, "2": None, "3": None}
+
+
+def test_processes_are_unknown_without_controls(cluster):
+    with TestClient(create_app(brokers=cluster.brokers)) as client:
+        assert client.get("/cluster").json()["processes"] is None
+
+
+def test_reconnect_undoes_one_cut_off_and_keeps_the_rest(cluster):
+    with TestClient(create_app(brokers=cluster.brokers)) as client:
+        client.post("/chaos/cut-off/2")
+        client.post("/chaos/cut-off/3")
+        assert client.get("/cluster").json()["cut_off"] == [2, 3]
+        client.post("/chaos/drop", json={"rate": 0.1})
+        reply = client.post("/chaos/reconnect/2").json()
+        assert reply["brokers"]["2"] == {"blocked": [3], "drop_rate": 0.1}  # 3 is still cut off
+        assert client.get("/cluster").json()["cut_off"] == [3]
+        assert client.post("/chaos/reconnect/9").status_code == 404
+    assert chaos_of(cluster) == {
+        1: {"blocked": [3], "drop_rate": 0.1},
+        2: {"blocked": [3], "drop_rate": 0.1},
+        3: {"blocked": [1, 2], "drop_rate": 0.1},
+    }
