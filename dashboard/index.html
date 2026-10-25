@@ -6,107 +6,168 @@
 <title>Log Pipeline</title>
 <style>
   :root {
-    --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #6b7280; --line: #e3e6eb;
+    --bg: #f4f5f7; --panel: #ffffff; --text: #1d2330; --muted: #6b7280; --line: #e3e6eb;
     --leader: #2563eb; --ok: #16a34a; --warn: #d97706; --bad: #dc2626;
-    --warn-bg: #fef3c7; --bad-bg: #fee2e2; --down-bg: #eef0f3;
+    --leader-bg: #eff4ff; --warn-bg: #fff7e6; --bad-bg: #fee2e2; --down-bg: #eef0f3;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #12151b; --panel: #1b2029; --text: #e6e9ef; --muted: #8b93a3; --line: #2a303c;
+      --bg: #101318; --panel: #191e27; --text: #e6e9ef; --muted: #8b93a3; --line: #2a303c;
       --leader: #60a5fa; --ok: #4ade80; --warn: #fbbf24; --bad: #f87171;
-      --warn-bg: #3a2e12; --bad-bg: #3b1a1a; --down-bg: #171a21;
+      --leader-bg: #17233a; --warn-bg: #2e2612; --bad-bg: #3b1a1a; --down-bg: #15181f;
     }
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, sans-serif; }
-  main { max-width: 1100px; margin: 0 auto; padding: 24px 16px; }
-  header { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
-  h1 { font-size: 20px; margin: 0; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, sans-serif; }
+  .app { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 20px; padding: 20px 24px;
+         min-height: 100vh; align-content: start; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+  .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0 0 12px; }
   .muted { color: var(--muted); }
-  .contents { display: contents; }
-  .grid { display: grid; grid-template-columns: 90px repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 20px; }
-  .head, .cell, .rowname { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
-  .head { display: flex; flex-direction: column; gap: 6px; }
-  .head .title { display: flex; justify-content: space-between; align-items: center; font-weight: 600; }
-  .rowname { font-weight: 600; display: flex; flex-direction: column; justify-content: center; gap: 4px; }
-  .rowname .note { font-weight: 400; font-size: 12px; }
-  .pill { font-size: 12px; font-weight: 600; padding: 1px 8px; border-radius: 999px; }
-  .up { color: var(--ok); } .down { color: var(--bad); }
-  .buttons { display: flex; gap: 6px; }
-  button { font: inherit; font-size: 13px; font-weight: 600; padding: 5px 14px; border-radius: 6px;
-           border: 1px solid currentColor; background: transparent; cursor: pointer; }
-  button.kill { color: var(--bad); }
-  button.restart { color: var(--ok); }
-  button.cut { color: var(--warn); }
-  .network { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 16px; padding: 10px;
-             background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
-  .network .label { font-weight: 600; }
-  .seg { display: flex; }
-  .seg button { color: var(--text); border-color: var(--line); border-radius: 0; margin-left: -1px; }
-  .seg button:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }
-  .seg button:last-child { border-radius: 0 6px 6px 0; }
-  .seg button.active, .seg button.active:hover { background: var(--text); color: var(--bg); border-color: var(--text); }
-  .pill.cutoff { color: var(--warn); }
-  .links { font-size: 12px; color: var(--warn); min-height: 1em; }
-  .trouble { color: var(--warn); font-weight: 600; }
+
+  /* Top bar */
+  .top { grid-column: 1 / -1; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  .top h1 { font-size: 22px; margin: 0; margin-right: auto; }
+  .health { font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .health::before { content: ""; width: 10px; height: 10px; border-radius: 50%; background: currentColor; }
+  .health.good { color: var(--ok); } .health.trouble { color: var(--warn); }
+  .paused-banner { grid-column: 1 / -1; background: var(--warn-bg); color: var(--warn); font-weight: 600;
+                   padding: 8px 14px; border-radius: 8px; }
+  .feedback { min-height: 1.4em; font-size: 14px; }
+  .feedback.ok { color: var(--ok); } .feedback.failed { color: var(--bad); }
+
+  /* Buttons */
+  button { font: inherit; font-size: 14px; font-weight: 600; padding: 6px 14px; border-radius: 7px;
+           border: 1px solid currentColor; background: transparent; color: var(--text); cursor: pointer; }
+  button.kill { color: var(--bad); } button.restart { color: var(--ok); } button.cut { color: var(--warn); }
   button:hover:not(:disabled) { background: var(--bg); }
-  button:disabled { color: var(--muted); opacity: 0.5; cursor: default; }
-  .cell.leader { border: 2px solid var(--leader); }
+  button:disabled { color: var(--muted); opacity: 0.45; cursor: default; }
+  .buttons { display: flex; gap: 8px; flex-wrap: wrap; }
+
+  /* Cluster grid */
+  .cluster { display: grid; grid-template-columns: 130px repeat(3, minmax(0, 1fr)); gap: 10px; }
+  .contents { display: contents; }
+  .head { display: flex; flex-direction: column; gap: 8px; }
+  .head .title { display: flex; justify-content: space-between; align-items: center; font-size: 17px; font-weight: 700; }
+  .pill { font-size: 13px; font-weight: 700; }
+  .pill.up { color: var(--ok); } .pill.cutoff, .pill.unreachable { color: var(--warn); } .pill.down { color: var(--bad); }
+  .leads { font-size: 13px; color: var(--muted); min-height: 1.3em; }
+  .leads b { color: var(--leader); }
+  .rowname { display: flex; flex-direction: column; justify-content: center; gap: 4px; }
+  .rowname .name { font-size: 17px; font-weight: 700; }
+  .rowname .note { font-size: 13px; color: var(--muted); }
+  .rowname.noleader { background: var(--bad-bg); }
+  .rowname.noleader .note { color: var(--bad); font-weight: 600; }
+  .newleader { color: var(--leader); font-weight: 700; }
+  .cell { min-height: 150px; display: flex; flex-direction: column; gap: 6px; transition: box-shadow 0.3s; }
+  .cell .role { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+  .cell .state { font-size: 18px; font-weight: 700; }
+  .cell .detail { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .cell.leader { border: 2px solid var(--leader); background: var(--leader-bg); }
+  .cell.leader .role, .cell.leader .state { color: var(--leader); }
+  .cell.flash { box-shadow: 0 0 0 5px color-mix(in srgb, var(--leader) 35%, transparent); }
+  .cell.synced .state { color: var(--ok); }
   .cell.behind { background: var(--warn-bg); }
-  .cell.isdown { background: var(--down-bg); color: var(--muted); }
-  .role { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
-  .cell.leader .role { color: var(--leader); }
-  .nums { margin: 4px 0 6px; font-variant-numeric: tabular-nums; }
-  .lag { color: var(--warn); font-weight: 600; }
-  .lines { font: 12px/1.45 ui-monospace, Menlo, monospace; display: flex; flex-direction: column; gap: 2px; }
+  .cell.behind .state { color: var(--warn); }
+  .cell.isdown { background: var(--down-bg); color: var(--muted); justify-content: center; align-items: center; }
+  .cell.isdown .state { color: var(--muted); }
+  .bar { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+  .bar div { height: 100%; background: var(--warn); }
+  .lines { font: 13px/1.5 ui-monospace, Menlo, monospace; display: flex; flex-direction: column; gap: 1px; margin-top: 4px; }
   .lines div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .uncommitted { opacity: 0.5; }
-  .ERROR { color: var(--bad); } .WARN { color: var(--warn); }
-  .noleader { background: var(--bad-bg); }
-  .noleader .note { color: var(--bad); }
-  footer { margin-top: 16px; font-size: 12px; }
+  .lines .offset { color: var(--muted); }
+  .uncommitted { opacity: 0.45; }
+  .ERROR { color: var(--bad); font-weight: 600; } .WARN { color: var(--warn); }
+
+  /* Side column */
+  .side { display: flex; flex-direction: column; gap: 20px; }
+  #net { width: 100%; height: auto; display: block; }
+  #net .link { stroke: var(--line); stroke-width: 3; }
+  #net .link.ok { stroke: var(--ok); }
+  #net .link.cut { stroke: var(--bad); stroke-dasharray: 7 6; }
+  #net .node { stroke-width: 3; fill: var(--panel); }
+  #net .node.up { stroke: var(--ok); } #net .node.cutoff, #net .node.unreachable { stroke: var(--warn); }
+  #net .node.down { stroke: var(--bad); fill: var(--down-bg); }
+  #net text { fill: var(--text); font: 600 14px system-ui, sans-serif; text-anchor: middle; }
+  #net text.sub { fill: var(--leader); font-size: 12px; font-weight: 600; }
+  .seg { display: flex; }
+  .seg button { border-color: var(--line); border-radius: 0; margin-left: -1px; padding: 6px 12px; }
+  .seg button:first-child { border-radius: 7px 0 0 7px; margin-left: 0; }
+  .seg button:last-child { border-radius: 0 7px 7px 0; }
+  .seg button.active, .seg button.active:hover { background: var(--text); color: var(--bg); border-color: var(--text); }
+  .controls { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; font-size: 14px; }
+  .trouble { color: var(--warn); font-weight: 600; }
+  .legend { margin: 0; padding-left: 18px; font-size: 14px; display: flex; flex-direction: column; gap: 6px; }
+
+  @media (max-width: 1100px) {
+    .app { grid-template-columns: minmax(0, 1fr); }
+  }
   @media (max-width: 700px) {
-    .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .app { padding: 16px; }
+    .cluster { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     .corner { display: none; }
-    .rowname { grid-column: 1 / -1; flex-direction: row; justify-content: space-between; }
+    .rowname { grid-column: 1 / -1; flex-direction: row; justify-content: space-between; align-items: center; }
   }
 </style>
 </head>
 <body>
-<main>
-  <header>
+<div class="app">
+  <div class="top">
     <h1>Distributed log pipeline</h1>
+    <span class="health good" id="health">healthy</span>
+    <span class="feedback" id="feedback"></span>
+    <button id="pause">Pause view</button>
     <span class="muted" id="status">connecting…</span>
-  </header>
-  <section class="network">
-    <span class="label">Network</span>
-    <span class="muted">Lose messages between brokers:</span>
-    <div class="seg" id="drop"></div>
-    <button class="restart" id="heal">Heal network</button>
-    <span class="muted" id="netstatus"></span>
-  </section>
-  <div class="grid">
-    <div class="corner"></div>
-    <div class="contents" id="heads"></div>
-    <div class="contents" id="rows"></div>
   </div>
-  <footer class="muted">
-    Each cell is one broker's copy of a partition: length, commit index (highest committed offset) and its last lines.
-    The leader's cell has a blue border, copies behind the leader are amber, and faded lines aren't committed yet.
-    Kill stops a broker at once and loses its log; Restart brings it back empty.
-    Cut off loses every message between that broker and the others (producers can still reach it), and the drop
-    buttons lose that share of all messages between brokers. Heal network undoes both.
-  </footer>
-</main>
+  <div class="paused-banner" id="paused" hidden>View paused: the cluster keeps running. Press Resume to see the live state.</div>
+
+  <main class="panel">
+    <h2>Brokers and their copies of each partition</h2>
+    <div class="cluster">
+      <div class="corner"></div>
+      <div class="contents" id="heads"></div>
+      <div class="contents" id="rows"></div>
+    </div>
+  </main>
+
+  <aside class="side">
+    <section class="panel">
+      <h2>Network</h2>
+      <svg id="net" viewBox="0 0 320 230" role="img" aria-label="Links between the brokers"></svg>
+      <div class="controls">
+        <div>Lose messages between brokers:</div>
+        <div class="buttons"><div class="seg" id="drop"></div><button class="restart" id="heal">Heal network</button></div>
+        <div class="muted" id="netstatus"></div>
+      </div>
+    </section>
+    <section class="panel">
+      <h2>How to read this</h2>
+      <ul class="legend">
+        <li>Each row is one service's log (a partition), copied to all three brokers.</li>
+        <li>The <b style="color: var(--leader)">blue</b> cell is the leader: producers write to it and it copies lines to the others. It glows for a few seconds after a takeover.</li>
+        <li><b style="color: var(--ok)">In sync</b> copies have everything; <b style="color: var(--warn)">amber</b> copies are catching up.</li>
+        <li>A line is committed (safe) once 2 of 3 brokers have it; faded lines aren't yet.</li>
+        <li><b>Kill</b> crashes a broker (its log is lost); <b>Restart</b> brings it back empty. <b>Cut off</b> breaks its links to the other brokers until <b>Reconnect</b>.</li>
+        <li><b>Stopped</b>: the process is dead. <b>Unreachable</b>: running but not answering.</li>
+      </ul>
+    </section>
+  </aside>
+</div>
 <script>
 const heads = document.getElementById("heads");
 const rows = document.getElementById("rows");
 const statusText = document.getElementById("status");
-const TAIL = 3;
+const feedback = document.getElementById("feedback");
+const TAIL = 4;
+const IN_SYNC = 2;  // a copy this few lines behind is in sync: lines are always in flight
 const DROP_RATES = [0, 0.1, 0.3, 0.5];
-// Broker headers are built once and updated in place: rebuilding a button
-// every second would drop clicks that land during a redraw.
+const FLASH_MS = 4000;
+// Broker headers and controls are built once and updated in place:
+// rebuilding a button every second would drop clicks that land during a redraw.
 const headers = {};
+const lastLeader = {};  // partition -> "broker:epoch" seen on the previous refresh
+const flashUntil = {};  // partition -> time until which its new leader glows
+let paused = false;
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -114,6 +175,15 @@ function el(tag, className, text) {
   if (text !== undefined) node.textContent = text;
   return node;
 }
+
+function svg(tag, attrs, text) {
+  const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, value);
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+const number = n => n.toLocaleString();
 
 // The leader is the broker that says it leads; if two do (an old leader that
 // hasn't heard yet), the one with the newer epoch.
@@ -126,128 +196,261 @@ function leaderOf(name, brokers) {
   return best;
 }
 
-async function post(path, body) {
-  await fetch(path, {
-    method: "POST",
-    headers: body ? { "content-type": "application/json" } : {},
-    body: body ? JSON.stringify(body) : undefined,
-  });
+let feedbackTimer = null;
+function tell(message, ok) {
+  feedback.textContent = message;
+  feedback.className = "feedback " + (ok ? "ok" : "failed");
+  clearTimeout(feedbackTimer);
+  feedbackTimer = setTimeout(() => { feedback.textContent = ""; }, 5000);
 }
 
-// The network bar is built once, like the broker headers.
+// Send one control request, showing it as pending on `button`, then report
+// how it went and refresh the view.
+async function act(button, path, body, done) {
+  const label = button.textContent;
+  button.disabled = true;
+  button.pending = true;
+  button.textContent = label + "…";
+  try {
+    const response = await fetch(path, {
+      method: "POST",
+      headers: body ? { "content-type": "application/json" } : {},
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const reply = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      tell(`Failed: ${reply.detail || response.status}`, false);
+    } else {
+      const skipped = Object.entries(reply.brokers || {}).filter(([, settings]) => settings === null).map(([id]) => id);
+      tell(done + (skipped.length ? ` (broker ${skipped.join(", ")} is down and was skipped)` : ""), true);
+    }
+  } catch (error) {
+    tell("Failed: dashboard server not reachable", false);
+  } finally {
+    button.pending = false;
+    button.textContent = label;
+    refresh(true);
+  }
+}
+
 const dropButtons = DROP_RATES.map(rate => {
-  const button = el("button", "", `${Math.round(rate * 100)}%`);
-  button.onclick = async () => { await post("/chaos/drop", { rate }); refresh(); };
+  const percent = `${Math.round(rate * 100)}%`;
+  const button = el("button", "", percent);
+  button.onclick = () => act(button, "/chaos/drop", { rate }, `Brokers now lose ${percent} of their messages`);
   document.getElementById("drop").append(button);
   return button;
 });
-document.getElementById("heal").onclick = async () => { await post("/chaos/heal"); refresh(); };
+const healButton = document.getElementById("heal");
+healButton.onclick = () => act(healButton, "/chaos/heal", null, "Network healed");
 
-async function control(id, action, button) {
-  button.disabled = true;
-  button.textContent = action === "kill" ? "Killing…" : "Starting…";
-  try {
-    await fetch(`/brokers/${id}/${action}`, { method: "POST" });
-  } finally {
-    button.textContent = action === "kill" ? "Kill" : "Restart";
-    refresh();
-  }
-}
+const pauseButton = document.getElementById("pause");
+pauseButton.onclick = () => {
+  paused = !paused;
+  pauseButton.textContent = paused ? "Resume" : "Pause view";
+  document.getElementById("paused").hidden = !paused;
+  if (!paused) refresh();
+};
 
 function brokerHeader(id) {
-  const head = el("div", "head");
+  const head = el("div", "panel head");
   const title = el("div", "title");
   const pill = el("span", "pill");
   title.append(el("span", "", `Broker ${id}`), pill);
+  const leads = el("div", "leads");
   const kill = el("button", "kill", "Kill");
-  kill.onclick = () => control(id, "kill", kill);
+  kill.onclick = () => act(kill, `/brokers/${id}/kill`, null, `Killed broker ${id}`);
   const restart = el("button", "restart", "Restart");
-  restart.onclick = () => control(id, "restart", restart);
-  const processButtons = el("span", "buttons");
-  processButtons.append(kill, restart);
-  const cut = el("button", "cut", "Cut off");
-  cut.onclick = async () => { await post(`/chaos/cut-off/${id}`); refresh(); };
+  restart.onclick = () => act(restart, `/brokers/${id}/restart`, null, `Restarted broker ${id}`);
+  // One button that cuts the broker off, or reconnects it when it is cut off.
+  const link = el("button", "cut", "Cut off");
+  link.onclick = () => link.reconnects
+    ? act(link, `/chaos/reconnect/${id}`, null, `Reconnected broker ${id}`)
+    : act(link, `/chaos/cut-off/${id}`, null, `Cut off broker ${id}`);
   const buttons = el("div", "buttons");
-  buttons.append(processButtons, cut);
-  const links = el("div", "links");
-  head.append(title, buttons, links);
+  buttons.append(kill, restart, link);
+  head.append(title, leads, buttons);
   heads.append(head);
-  return { pill, kill, restart, cut, processButtons, links };
+  return { pill, leads, kill, restart, link };
 }
 
-// A broker is cut off when it loses messages to every other broker.
-function isCutOff(id, state, ids) {
-  return !!state && ids.every(other => other === id || state.chaos.blocked.includes(Number(other)));
+function isCutOff(id, data) {
+  return data.cut_off.includes(Number(id));
 }
 
-function updateHeader(id, state, controls, ids) {
+// up / cut off (answers the dashboard, but not other brokers) / unreachable
+// (process running, not answering) / stopped (process dead) / down (unknown).
+function brokerStatus(id, data) {
+  if (data.brokers[id]) return isCutOff(id, data) ? "cut off" : "up";
+  if (!data.processes) return "down";
+  return data.processes[id] === "running" ? "unreachable" : "stopped";
+}
+
+const STATUS_CLASS = { "up": "up", "cut off": "cutoff", "unreachable": "unreachable", "stopped": "down", "down": "down" };
+
+function setDisabled(button, disabled) {
+  if (!button.pending) button.disabled = disabled;
+}
+
+function updateHeader(id, data, leaders) {
   const header = headers[id] || (headers[id] = brokerHeader(id));
-  const cutOff = isCutOff(id, state, ids);
-  header.pill.className = "pill " + (!state ? "down" : cutOff ? "cutoff" : "up");
-  header.pill.textContent = !state ? "down" : cutOff ? "cut off" : "up";
-  header.processButtons.hidden = !controls;
-  if (!header.kill.textContent.endsWith("…")) header.kill.disabled = !state;
-  if (!header.restart.textContent.endsWith("…")) header.restart.disabled = !!state;
-  header.cut.disabled = !state || cutOff;
-  const blocked = state && !cutOff ? state.chaos.blocked : [];
-  header.links.textContent = blocked.length ? `not reaching broker ${blocked.join(", ")}` : "";
+  const state = data.brokers[id];
+  const status = brokerStatus(id, data);
+  header.pill.className = "pill " + STATUS_CLASS[status];
+  header.pill.textContent = status;
+
+  const led = data.partitions.filter(name => leaders[name] && leaders[name].id === id);
+  header.leads.replaceChildren(...(led.length
+    ? ["leads ", ...led.flatMap((name, i) => [i ? ", " : "", el("b", "", name)])]
+    : [state ? "leads nothing" : ""]));
+
+  const running = data.processes ? data.processes[id] === "running" : !!state;
+  header.kill.hidden = header.restart.hidden = !data.controls;
+  setDisabled(header.kill, !running);
+  setDisabled(header.restart, running);
+  header.link.reconnects = isCutOff(id, data);
+  if (!header.link.pending) header.link.textContent = header.link.reconnects ? "Reconnect" : "Cut off";
+  header.link.className = header.link.reconnects ? "restart" : "cut";
+  setDisabled(header.link, !state && !header.link.reconnects);
 }
 
-function updateNetwork(brokers, ids) {
-  const up = ids.filter(id => brokers[id]);
-  const rate = Math.max(0, ...up.map(id => brokers[id].chaos.drop_rate));
+// Draw the three brokers as a triangle; a link is cut if either side drops
+// the other's messages.
+function drawNetwork(data, ids, leaders) {
+  const net = document.getElementById("net");
+  const spots = [[160, 46], [62, 186], [258, 186]];
+  const at = Object.fromEntries(ids.map((id, i) => [id, spots[i % spots.length]]));
+  const parts = [];
+  ids.forEach((a, i) => ids.slice(i + 1).forEach(b => {
+    const sa = data.brokers[a], sb = data.brokers[b];
+    let kind = "";
+    if (sa && sb) {
+      const cut = sa.chaos.blocked.includes(Number(b)) || sb.chaos.blocked.includes(Number(a));
+      kind = cut ? "cut" : "ok";
+    }
+    parts.push(svg("line", { class: `link ${kind}`, x1: at[a][0], y1: at[a][1], x2: at[b][0], y2: at[b][1] }));
+  }));
+  for (const id of ids) {
+    const [x, y] = at[id];
+    const led = data.partitions.filter(name => leaders[name] && leaders[name].id === id);
+    parts.push(svg("circle", { class: `node ${STATUS_CLASS[brokerStatus(id, data)]}`, cx: x, cy: y, r: 30 }));
+    parts.push(svg("text", { x, y: y + 5 }, id));
+    parts.push(svg("text", { class: "sub", x, y: y + 48 }, led.join(", ")));
+  }
+  net.replaceChildren(...parts);
+}
+
+// Returns a list of current problems, for the network panel and the top bar.
+function updateNetwork(data, ids) {
+  const up = ids.filter(id => data.brokers[id]);
+  const rate = Math.max(0, ...up.map(id => data.brokers[id].chaos.drop_rate));
   dropButtons.forEach((button, i) => button.classList.toggle("active", DROP_RATES[i] === rate));
-  const cut = up.filter(id => isCutOff(id, brokers[id], ids));
   const trouble = [];
   if (rate) trouble.push(`losing ${Math.round(rate * 100)}% of messages`);
-  if (cut.length) trouble.push(`broker ${cut.join(", ")} cut off`);
+  if (data.cut_off.length) trouble.push(`broker ${data.cut_off.join(", ")} cut off`);
   const status = document.getElementById("netstatus");
-  status.textContent = trouble.length ? trouble.join(" · ") : "healthy";
+  status.textContent = trouble.length ? trouble.join(" · ") : "all links working";
   status.className = trouble.length ? "trouble" : "muted";
+  return trouble;
 }
 
-function copyCell(copy, leader, isLeader) {
-  if (!copy) return el("div", "cell isdown", "down");
-  const behind = leader && !isLeader ? leader.copy.length - copy.length : 0;
-  const cell = el("div", "cell" + (isLeader ? " leader" : "") + (behind > 0 ? " behind" : ""));
-  cell.append(el("div", "role", `${isLeader ? "leader" : "follower"} · epoch ${copy.epoch}`));
-  const nums = el("div", "nums", `${copy.length} lines · committed to ${copy.commit_index}`);
-  if (behind > 0) nums.append(" ", el("span", "lag", `−${behind} behind`));
-  cell.append(nums);
+// Remember each partition's leader, and start the glow when it changes.
+function noteLeaders(data, leaders) {
+  const now = Date.now();
+  for (const name of data.partitions) {
+    const leader = leaders[name];
+    const key = leader ? `${leader.id}:${leader.copy.epoch}` : null;
+    if (key && lastLeader[name] !== undefined && key !== lastLeader[name]) flashUntil[name] = now + FLASH_MS;
+    if (key) lastLeader[name] = key;
+    else if (lastLeader[name] === undefined) lastLeader[name] = null;
+  }
+}
+
+function linesOf(copy, count) {
   const lines = el("div", "lines");
-  for (const entry of copy.last_entries.slice(-TAIL)) {
+  for (const entry of copy.last_entries.slice(-count)) {
     const line = el("div", entry.offset > copy.commit_index ? "uncommitted" : "");
-    line.append(`${entry.offset} `, el("span", entry.line.level, entry.line.level), ` ${entry.line.text}`);
+    line.append(el("span", "offset", `${entry.offset} `), el("span", entry.line.level, entry.line.level), ` ${entry.line.text}`);
     line.title = line.textContent;
     lines.append(line);
   }
-  cell.append(lines);
+  return lines;
+}
+
+function copyCell(copy, status, leader, isLeader, flashing) {
+  if (!copy) {
+    const cell = el("div", "panel cell isdown");
+    cell.append(el("div", "state", status));
+    return cell;
+  }
+  const details = `${number(copy.length)} lines · ${number(copy.commit_index + 1)} committed · epoch ${copy.epoch}`;
+  if (isLeader) {
+    const cell = el("div", "panel cell leader" + (flashing ? " flash" : ""));
+    cell.append(el("div", "role", "★ leader"), el("div", "state", "receiving lines"), el("div", "detail", details),
+                linesOf(copy, TAIL));
+    return cell;
+  }
+  const behind = leader ? leader.copy.length - copy.length : 0;
+  const synced = leader && behind <= IN_SYNC;
+  const cell = el("div", "panel cell " + (synced ? "synced" : leader ? "behind" : ""));
+  cell.title = details;
+  cell.append(el("div", "role", "follower"));
+  if (!leader) {
+    cell.append(el("div", "state", "waiting for a leader"));
+  } else if (synced) {
+    cell.append(el("div", "state", "✓ in sync"));
+  } else {
+    cell.append(el("div", "state", `⚠ ${number(behind)} lines behind`));
+    const bar = el("div", "bar");
+    const fill = el("div");
+    fill.style.width = `${Math.max(2, Math.round(100 * copy.length / Math.max(1, leader.copy.length)))}%`;
+    bar.append(fill);
+    cell.append(bar);
+  }
+  cell.append(el("div", "detail", details));
   return cell;
 }
 
 function render(data) {
   const ids = Object.keys(data.brokers);
-  for (const id of ids) updateHeader(id, data.brokers[id], data.controls, ids);
-  updateNetwork(data.brokers, ids);
+  const leaders = Object.fromEntries(data.partitions.map(name => [name, leaderOf(name, data.brokers)]));
+  noteLeaders(data, leaders);
+  for (const id of ids) updateHeader(id, data, leaders);
+  const trouble = updateNetwork(data, ids);
+  drawNetwork(data, ids, leaders);
+
+  const down = ids.filter(id => !data.brokers[id]);
+  const leaderless = data.partitions.filter(name => !leaders[name]);
+  if (down.length) trouble.unshift(`broker ${down.join(", ")} down`);
+  if (leaderless.length) trouble.unshift(`${leaderless.join(", ")} without a leader`);
+  const health = document.getElementById("health");
+  health.textContent = trouble.length ? trouble.join(" · ") : "healthy";
+  health.className = "health " + (trouble.length ? "trouble" : "good");
+
+  const now = Date.now();
   const cells = [];
   for (const name of data.partitions) {
-    const leader = leaderOf(name, data.brokers);
-    const row = el("div", "rowname" + (leader ? "" : " noleader"));
-    row.append(el("span", "", name), el("span", "note muted", leader ? `leader: ${leader.id}` : "no leader"));
+    const leader = leaders[name];
+    const flashing = (flashUntil[name] || 0) > now;
+    const row = el("div", "panel rowname" + (leader ? "" : " noleader"));
+    const note = el("span", "note", leader ? `leader: broker ${leader.id}` : "no leader");
+    if (leader && flashing) note.append(" ", el("span", "newleader", "new"));
+    row.append(el("span", "name", name), note);
     cells.push(row);
     for (const id of ids) {
       const state = data.brokers[id];
-      cells.push(copyCell(state && state.partitions[name], leader, leader && leader.id === id));
+      cells.push(copyCell(state && state.partitions[name], brokerStatus(id, data), leader, leader && leader.id === id, flashing));
     }
   }
   rows.replaceChildren(...cells);
 }
 
-async function refresh() {
+// `force` redraws even while paused, so a button press shows its result.
+async function refresh(force = false) {
+  if (paused && !force) return;
   try {
     const response = await fetch("/cluster");
     render(await response.json());
-    statusText.textContent = "updated " + new Date().toLocaleTimeString();
+    statusText.textContent = (paused ? "paused at " : "updated ") + new Date().toLocaleTimeString();
   } catch (error) {
     statusText.textContent = "dashboard server not reachable";
   }
