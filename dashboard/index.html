@@ -8,22 +8,23 @@
   :root {
     --bg: #f4f5f7; --panel: #ffffff; --text: #1d2330; --muted: #6b7280; --line: #e3e6eb;
     --leader: #2563eb; --ok: #16a34a; --warn: #d97706; --bad: #dc2626;
-    --leader-bg: #eff4ff; --warn-bg: #fff7e6; --bad-bg: #fee2e2; --down-bg: #eef0f3;
+    --leader-bg: #eff4ff; --warn-bg: #fff7e6; --bad-bg: #fee2e2; --down-bg: #eef0f3; --ok-bg: #ecfdf3;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #101318; --panel: #191e27; --text: #e6e9ef; --muted: #8b93a3; --line: #2a303c;
       --leader: #60a5fa; --ok: #4ade80; --warn: #fbbf24; --bad: #f87171;
-      --leader-bg: #17233a; --warn-bg: #2e2612; --bad-bg: #3b1a1a; --down-bg: #15181f;
+      --leader-bg: #17233a; --warn-bg: #2e2612; --bad-bg: #3b1a1a; --down-bg: #15181f; --ok-bg: #12291c;
     }
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, sans-serif; }
-  .app { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 20px; padding: 20px 24px;
+  .app { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 20px; padding: 20px 24px;
          min-height: 100vh; align-content: start; }
   .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
   .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0 0 12px; }
   .muted { color: var(--muted); }
+  .num { font-variant-numeric: tabular-nums; }
 
   /* Top bar */
   .top { grid-column: 1 / -1; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
@@ -40,9 +41,14 @@
   button { font: inherit; font-size: 14px; font-weight: 600; padding: 6px 14px; border-radius: 7px;
            border: 1px solid currentColor; background: transparent; color: var(--text); cursor: pointer; }
   button.kill { color: var(--bad); } button.restart { color: var(--ok); } button.cut { color: var(--warn); }
+  button.small { font-size: 13px; padding: 4px 10px; }
   button:hover:not(:disabled) { background: var(--bg); }
   button:disabled { color: var(--muted); opacity: 0.45; cursor: default; }
   .buttons { display: flex; gap: 8px; flex-wrap: wrap; }
+
+  /* Main column */
+  .main { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+  .pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; }
 
   /* Cluster grid */
   .cluster { display: grid; grid-template-columns: 130px repeat(3, minmax(0, 1fr)); gap: 10px; }
@@ -79,8 +85,24 @@
   .uncommitted { opacity: 0.45; }
   .ERROR { color: var(--bad); font-weight: 600; } .WARN { color: var(--warn); }
 
+  /* Producers and checks */
+  .rows { display: flex; flex-direction: column; gap: 10px; }
+  .producer { display: grid; grid-template-columns: 70px minmax(0, 1fr) auto; gap: 4px 12px; align-items: center;
+              padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+  .producer:last-child { border-bottom: none; padding-bottom: 0; }
+  .producer .name, .check .name { font-weight: 700; }
+  .producer .stats { font-size: 14px; }
+  .waiting { color: var(--warn); font-weight: 700; }
+  .check { display: flex; gap: 10px; align-items: flex-start; }
+  .check .mark { font-size: 18px; font-weight: 700; line-height: 1.2; width: 20px; text-align: center; }
+  .check.good .mark { color: var(--ok); } .check.bad .mark { color: var(--bad); } .check.wait .mark { color: var(--muted); }
+  .check .text { font-size: 14px; }
+  .summary { margin-top: 12px; padding: 8px 12px; border-radius: 8px; font-weight: 600; font-size: 14px; }
+  .summary.good { background: var(--ok-bg); color: var(--ok); } .summary.bad { background: var(--bad-bg); color: var(--bad); }
+  .summary.wait { background: var(--down-bg); color: var(--muted); }
+
   /* Side column */
-  .side { display: flex; flex-direction: column; gap: 20px; }
+  .side { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
   #net { width: 100%; height: auto; display: block; }
   #net .link { stroke: var(--line); stroke-width: 3; }
   #net .link.ok { stroke: var(--ok); }
@@ -97,13 +119,28 @@
   .seg button.active, .seg button.active:hover { background: var(--text); color: var(--bg); border-color: var(--text); }
   .controls { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; font-size: 14px; }
   .trouble { color: var(--warn); font-weight: 600; }
-  .legend { margin: 0; padding-left: 18px; font-size: 14px; display: flex; flex-direction: column; gap: 6px; }
+  .feed { display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow-y: auto; font-size: 14px; }
+  .feed .item { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 8px; }
+  .feed .when { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .feed .empty { color: var(--muted); }
+  .alert-item { background: var(--bad-bg); border-radius: 8px; padding: 8px 10px; }
+  .alert-item b { color: var(--bad); }
+  .kind-action { color: var(--muted); }
+  .kind-down { color: var(--bad); }
+  .kind-up { color: var(--ok); }
+  .kind-leader { color: var(--leader); font-weight: 600; }
+  .kind-sync { color: var(--ok); }
+  .kind-alert { color: var(--bad); font-weight: 600; }
+  details.panel summary { cursor: pointer; font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em;
+                          color: var(--muted); font-weight: 700; }
+  .legend { margin: 12px 0 0; padding-left: 18px; font-size: 14px; display: flex; flex-direction: column; gap: 6px; }
 
-  @media (max-width: 1100px) {
+  @media (max-width: 1200px) {
     .app { grid-template-columns: minmax(0, 1fr); }
   }
-  @media (max-width: 700px) {
+  @media (max-width: 800px) {
     .app { padding: 16px; }
+    .pair { grid-template-columns: minmax(0, 1fr); }
     .cluster { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     .corner { display: none; }
     .rowname { grid-column: 1 / -1; flex-direction: row; justify-content: space-between; align-items: center; }
@@ -121,19 +158,45 @@
   </div>
   <div class="paused-banner" id="paused" hidden>View paused: the cluster keeps running. Press Resume to see the live state.</div>
 
-  <main class="panel">
-    <h2>Brokers and their copies of each partition</h2>
-    <div class="cluster">
-      <div class="corner"></div>
-      <div class="contents" id="heads"></div>
-      <div class="contents" id="rows"></div>
+  <div class="main">
+    <section class="panel">
+      <h2>Brokers and their copies of each partition</h2>
+      <div class="cluster">
+        <div class="corner"></div>
+        <div class="contents" id="heads"></div>
+        <div class="contents" id="rows"></div>
+      </div>
+    </section>
+    <div class="pair">
+      <section class="panel">
+        <h2>Producers</h2>
+        <div class="rows" id="producers"></div>
+      </section>
+      <section class="panel">
+        <h2>Correctness check</h2>
+        <div class="rows" id="checks"></div>
+        <div class="summary wait" id="check-summary">checking…</div>
+      </section>
     </div>
-  </main>
+    <details class="panel">
+      <summary>How to read this</summary>
+      <ul class="legend">
+        <li>Each row is one service's log (a partition), copied to all three brokers.</li>
+        <li>The <b style="color: var(--leader)">blue</b> cell is the leader: producers write to it and it copies lines to the others. It glows for a few seconds after a takeover.</li>
+        <li><b style="color: var(--ok)">In sync</b> copies have everything; <b style="color: var(--warn)">amber</b> copies are catching up.</li>
+        <li>A line is committed (safe) once 2 of 3 brokers have it; faded lines aren't yet. Producers get their ack only then; until then a line is <b style="color: var(--warn)">waiting</b> and gets resent.</li>
+        <li><b>Kill</b> crashes a broker (its log is lost); <b>Restart</b> brings it back empty. <b>Cut off</b> breaks its links to the other brokers until <b>Reconnect</b>.</li>
+        <li><b>Stopped</b>: the process is dead. <b>Unreachable</b>: running but not answering.</li>
+        <li>The correctness check compares committed message IDs and their order among available copies that are close to the leader. It does not compare message contents or prove that every acknowledged line survived.</li>
+        <li><b>Error burst</b> makes a producer send 5 errors at once, so the alert consumer raises an alert.</li>
+      </ul>
+    </details>
+  </div>
 
   <aside class="side">
     <section class="panel">
       <h2>Network</h2>
-      <svg id="net" viewBox="0 0 320 230" role="img" aria-label="Links between the brokers"></svg>
+      <svg id="net" viewBox="0 0 320 250" role="img" aria-label="Links between the brokers"></svg>
       <div class="controls">
         <div>Lose messages between brokers:</div>
         <div class="buttons"><div class="seg" id="drop"></div><button class="restart" id="heal">Heal network</button></div>
@@ -141,15 +204,12 @@
       </div>
     </section>
     <section class="panel">
-      <h2>How to read this</h2>
-      <ul class="legend">
-        <li>Each row is one service's log (a partition), copied to all three brokers.</li>
-        <li>The <b style="color: var(--leader)">blue</b> cell is the leader: producers write to it and it copies lines to the others. It glows for a few seconds after a takeover.</li>
-        <li><b style="color: var(--ok)">In sync</b> copies have everything; <b style="color: var(--warn)">amber</b> copies are catching up.</li>
-        <li>A line is committed (safe) once 2 of 3 brokers have it; faded lines aren't yet.</li>
-        <li><b>Kill</b> crashes a broker (its log is lost); <b>Restart</b> brings it back empty. <b>Cut off</b> breaks its links to the other brokers until <b>Reconnect</b>.</li>
-        <li><b>Stopped</b>: the process is dead. <b>Unreachable</b>: running but not answering.</li>
-      </ul>
+      <h2>Alerts</h2>
+      <div class="feed" id="alerts"></div>
+    </section>
+    <section class="panel">
+      <h2>What happened</h2>
+      <div class="feed" id="events"></div>
     </section>
   </aside>
 </div>
@@ -159,12 +219,12 @@ const rows = document.getElementById("rows");
 const statusText = document.getElementById("status");
 const feedback = document.getElementById("feedback");
 const TAIL = 4;
-const IN_SYNC = 2;  // a copy this few lines behind is in sync: lines are always in flight
 const DROP_RATES = [0, 0.1, 0.3, 0.5];
 const FLASH_MS = 4000;
-// Broker headers and controls are built once and updated in place:
+// Headers, producer rows and controls are built once and updated in place:
 // rebuilding a button every second would drop clicks that land during a redraw.
 const headers = {};
+const producerRows = {};
 const lastLeader = {};  // partition -> "broker:epoch" seen on the previous refresh
 const flashUntil = {};  // partition -> time until which its new leader glows
 let paused = false;
@@ -184,6 +244,7 @@ function svg(tag, attrs, text) {
 }
 
 const number = n => n.toLocaleString();
+const clock = seconds => new Date(seconds * 1000).toLocaleTimeString([], { hour12: false });
 
 // The leader is the broker that says it leads; if two do (an old leader that
 // hasn't heard yet), the one with the newer epoch.
@@ -228,6 +289,7 @@ async function act(button, path, body, done) {
     tell("Failed: dashboard server not reachable", false);
   } finally {
     button.pending = false;
+    button.disabled = false;  // the refresh below disables it again if it doesn't apply
     button.textContent = label;
     refresh(true);
   }
@@ -250,6 +312,12 @@ pauseButton.onclick = () => {
   document.getElementById("paused").hidden = !paused;
   if (!paused) refresh();
 };
+
+function setDisabled(button, disabled) {
+  if (!button.pending) button.disabled = disabled;
+}
+
+// ----- Brokers and copies -----
 
 function brokerHeader(id) {
   const head = el("div", "panel head");
@@ -287,10 +355,6 @@ function brokerStatus(id, data) {
 
 const STATUS_CLASS = { "up": "up", "cut off": "cutoff", "unreachable": "unreachable", "stopped": "down", "down": "down" };
 
-function setDisabled(button, disabled) {
-  if (!button.pending) button.disabled = disabled;
-}
-
 function updateHeader(id, data, leaders) {
   const header = headers[id] || (headers[id] = brokerHeader(id));
   const state = data.brokers[id];
@@ -313,11 +377,90 @@ function updateHeader(id, data, leaders) {
   setDisabled(header.link, !state && !header.link.reconnects);
 }
 
+// Remember each partition's leader, and start the glow when it changes.
+function noteLeaders(data, leaders) {
+  const now = Date.now();
+  for (const name of data.partitions) {
+    const leader = leaders[name];
+    const key = leader ? `${leader.id}:${leader.copy.epoch}` : null;
+    if (key && lastLeader[name] !== undefined && key !== lastLeader[name]) flashUntil[name] = now + FLASH_MS;
+    if (key) lastLeader[name] = key;
+    else if (lastLeader[name] === undefined) lastLeader[name] = null;
+  }
+}
+
+function linesOf(copy, count) {
+  const lines = el("div", "lines");
+  for (const entry of copy.last_entries.slice(-count)) {
+    const line = el("div", entry.offset > copy.commit_index ? "uncommitted" : "");
+    line.append(el("span", "offset", `${entry.offset} `), el("span", entry.line.level, entry.line.level), ` ${entry.line.text}`);
+    line.title = line.textContent;
+    lines.append(line);
+  }
+  return lines;
+}
+
+function copyCell(copy, status, leader, isLeader, flashing, inSync) {
+  if (!copy) {
+    const cell = el("div", "panel cell isdown");
+    cell.append(el("div", "state", status));
+    return cell;
+  }
+  const details = `${number(copy.length)} lines · ${number(copy.commit_index + 1)} committed · epoch ${copy.epoch}`;
+  if (isLeader) {
+    const cell = el("div", "panel cell leader" + (flashing ? " flash" : ""));
+    cell.append(el("div", "role", "★ leader"), el("div", "state", "receiving lines"), el("div", "detail", details),
+                linesOf(copy, TAIL));
+    return cell;
+  }
+  const behind = leader ? leader.copy.length - copy.length : 0;
+  const synced = leader && behind <= inSync;
+  const cell = el("div", "panel cell " + (synced ? "synced" : leader ? "behind" : ""));
+  cell.title = details;
+  cell.append(el("div", "role", "follower"));
+  if (!leader) {
+    cell.append(el("div", "state", "waiting for a leader"));
+  } else if (synced) {
+    cell.append(el("div", "state", "✓ in sync"));
+  } else {
+    cell.append(el("div", "state", `⚠ ${number(behind)} lines behind`));
+    const bar = el("div", "bar");
+    const fill = el("div");
+    fill.style.width = `${Math.max(2, Math.round(100 * copy.length / Math.max(1, leader.copy.length)))}%`;
+    bar.append(fill);
+    cell.append(bar);
+  }
+  cell.append(el("div", "detail", details));
+  return cell;
+}
+
+function renderCluster(data, ids, leaders) {
+  const now = Date.now();
+  const cells = [];
+  for (const name of data.partitions) {
+    const leader = leaders[name];
+    const flashing = (flashUntil[name] || 0) > now;
+    const row = el("div", "panel rowname" + (leader ? "" : " noleader"));
+    const note = el("span", "note", leader ? `leader: broker ${leader.id}` : "no leader");
+    if (leader && flashing) note.append(" ", el("span", "newleader", "new"));
+    row.append(el("span", "name", name), note);
+    cells.push(row);
+    for (const id of ids) {
+      const state = data.brokers[id];
+      cells.push(copyCell(state && state.partitions[name], brokerStatus(id, data), leader,
+                          leader && leader.id === id, flashing, data.in_sync));
+    }
+  }
+  rows.replaceChildren(...cells);
+}
+
+// ----- Network -----
+
 // Draw the three brokers as a triangle; a link is cut if either side drops
 // the other's messages.
 function drawNetwork(data, ids, leaders) {
   const net = document.getElementById("net");
-  const spots = [[160, 46], [62, 186], [258, 186]];
+  const spots = [[160, 40], [62, 175], [258, 175]];
   const at = Object.fromEntries(ids.map((id, i) => [id, spots[i % spots.length]]));
   const parts = [];
   ids.forEach((a, i) => ids.slice(i + 1).forEach(b => {
@@ -353,62 +496,116 @@ function updateNetwork(data, ids) {
   return trouble;
 }
 
-// Remember each partition's leader, and start the glow when it changes.
-function noteLeaders(data, leaders) {
-  const now = Date.now();
-  for (const name of data.partitions) {
-    const leader = leaders[name];
-    const key = leader ? `${leader.id}:${leader.copy.epoch}` : null;
-    if (key && lastLeader[name] !== undefined && key !== lastLeader[name]) flashUntil[name] = now + FLASH_MS;
-    if (key) lastLeader[name] = key;
-    else if (lastLeader[name] === undefined) lastLeader[name] = null;
+// ----- Producers -----
+
+function producerRow(service) {
+  const row = el("div", "producer");
+  const stats = el("div", "stats");
+  const where = el("div", "muted");
+  const info = el("div");
+  info.append(stats, where);
+  const burst = el("button", "kill small", "Error burst");
+  burst.onclick = () => act(burst, `/producers/${service}/burst`, null, `Sent a burst of errors from ${service}`);
+  const toggle = el("button", "small", "Pause");
+  toggle.onclick = () => toggle.resumes
+    ? act(toggle, `/producers/${service}/resume`, null, `Resumed the ${service} producer`)
+    : act(toggle, `/producers/${service}/pause`, null, `Paused the ${service} producer`);
+  const buttons = el("div", "buttons");
+  buttons.append(burst, toggle);
+  row.append(el("div", "name", service), info, buttons);
+  document.getElementById("producers").append(row);
+  return { stats, where, burst, toggle };
+}
+
+function renderProducers(data) {
+  for (const service of data.partitions) {
+    const row = producerRows[service] || (producerRows[service] = producerRow(service));
+    const status = data.producers[service];
+    const running = status && !status.stale;
+    if (!running) {
+      row.stats.textContent = "not running";
+      row.where.textContent = "";
+    } else {
+      row.stats.replaceChildren(el("span", "num", `${number(status.acked)} acked`), " · ",
+        status.waiting > 0 ? el("span", "waiting num", `${number(status.waiting)} waiting to retry`)
+                           : el("span", "muted", "nothing waiting"));
+      row.where.textContent = status.paused ? "paused: not making new lines" : `sending to broker ${status.leader}`;
+    }
+    setDisabled(row.burst, !running);
+    row.toggle.resumes = !!(status && status.paused);
+    if (!row.toggle.pending) row.toggle.textContent = row.toggle.resumes ? "Resume" : "Pause";
+    setDisabled(row.toggle, !running);
   }
 }
 
-function linesOf(copy, count) {
-  const lines = el("div", "lines");
-  for (const entry of copy.last_entries.slice(-count)) {
-    const line = el("div", entry.offset > copy.commit_index ? "uncommitted" : "");
-    line.append(el("span", "offset", `${entry.offset} `), el("span", entry.line.level, entry.line.level), ` ${entry.line.text}`);
-    line.title = line.textContent;
-    lines.append(line);
-  }
-  return lines;
-}
+// ----- Correctness check -----
 
-function copyCell(copy, status, leader, isLeader, flashing) {
-  if (!copy) {
-    const cell = el("div", "panel cell isdown");
-    cell.append(el("div", "state", status));
-    return cell;
+function renderChecks(data) {
+  const box = document.getElementById("checks");
+  const summary = document.getElementById("check-summary");
+  if (!data.checks) {
+    box.replaceChildren(el("div", "muted", "The first check runs a few seconds after start."));
+    summary.className = "summary wait";
+    summary.textContent = "checking…";
+    return;
   }
-  const details = `${number(copy.length)} lines · ${number(copy.commit_index + 1)} committed · epoch ${copy.epoch}`;
-  if (isLeader) {
-    const cell = el("div", "panel cell leader" + (flashing ? " flash" : ""));
-    cell.append(el("div", "role", "★ leader"), el("div", "state", "receiving lines"), el("div", "detail", details),
-                linesOf(copy, TAIL));
-    return cell;
-  }
-  const behind = leader ? leader.copy.length - copy.length : 0;
-  const synced = leader && behind <= IN_SYNC;
-  const cell = el("div", "panel cell " + (synced ? "synced" : leader ? "behind" : ""));
-  cell.title = details;
-  cell.append(el("div", "role", "follower"));
-  if (!leader) {
-    cell.append(el("div", "state", "waiting for a leader"));
-  } else if (synced) {
-    cell.append(el("div", "state", "✓ in sync"));
+  let allGood = true, compared = 0;
+  const items = data.partitions.map(name => {
+    const check = data.checks.partitions[name];
+    let kind = "wait", mark = "…", text;
+    if (!check) {
+      text = `${name}: no leader right now, so nothing to compare`;
+    } else if (check.compared.length < 2) {
+      text = `${name}: only broker ${check.compared.join(", ") || "none"} can be compared right now`;
+    } else {
+      const ok = check.agree && check.unique;
+      kind = ok ? "good" : "bad";
+      mark = ok ? "✓" : "✗";
+      allGood = allGood && ok;
+      compared += 1;
+      text = `${name}: brokers ${check.compared.join(", ")} ${check.agree ? "hold the same" : "DISAGREE on the"} ` +
+             `${number(check.upto + 1)} committed message IDs in order${check.unique ? ", with no duplicate IDs detected" : ", and a duplicate ID was detected"}`;
+      if (check.catching_up.length) text += ` (broker ${check.catching_up.join(", ")} still catching up)`;
+    }
+    const item = el("div", `check ${kind}`);
+    item.append(el("span", "mark", mark), el("span", "text", text));
+    return item;
+  });
+  box.replaceChildren(...items);
+  const at = ` · checked at ${clock(data.checks.time)}`;
+  if (!allGood) {
+    summary.className = "summary bad";
+    summary.textContent = "✗ Message ID mismatch or duplicate detected" + at;
+  } else if (!compared) {
+    summary.className = "summary wait";
+    summary.textContent = "Nothing to compare right now" + at;
   } else {
-    cell.append(el("div", "state", `⚠ ${number(behind)} lines behind`));
-    const bar = el("div", "bar");
-    const fill = el("div");
-    fill.style.width = `${Math.max(2, Math.round(100 * copy.length / Math.max(1, leader.copy.length)))}%`;
-    bar.append(fill);
-    cell.append(bar);
+    summary.className = "summary good";
+    summary.textContent = `✓ Message IDs match in ${compared}/${data.partitions.length} partitions checked` + at;
   }
-  cell.append(el("div", "detail", details));
-  return cell;
 }
+
+// ----- Alerts and events -----
+
+function renderFeeds(data) {
+  const alerts = document.getElementById("alerts");
+  alerts.replaceChildren(...(data.alerts.length ? data.alerts.map(alert => {
+    const item = el("div", "item alert-item");
+    const what = el("div");
+    what.append(el("b", "", alert.service), ` · ${alert.count} errors in ${(alert.end - alert.start).toFixed(1)}s`);
+    item.append(el("span", "when", clock(alert.detected)), what);
+    return item;
+  }) : [el("div", "empty", "No alerts yet. Press Error burst on a producer to set one off.")]));
+
+  const events = document.getElementById("events");
+  events.replaceChildren(...(data.events.length ? data.events.map(event => {
+    const item = el("div", "item");
+    item.append(el("span", "when", clock(event.time)), el("span", `kind-${event.kind}`, event.text));
+    return item;
+  }) : [el("div", "empty", "Nothing yet.")]));
+}
+
+// ----- Refresh -----
 
 function render(data) {
   const ids = Object.keys(data.brokers);
@@ -426,22 +623,10 @@ function render(data) {
   health.textContent = trouble.length ? trouble.join(" · ") : "healthy";
   health.className = "health " + (trouble.length ? "trouble" : "good");
 
-  const now = Date.now();
-  const cells = [];
-  for (const name of data.partitions) {
-    const leader = leaders[name];
-    const flashing = (flashUntil[name] || 0) > now;
-    const row = el("div", "panel rowname" + (leader ? "" : " noleader"));
-    const note = el("span", "note", leader ? `leader: broker ${leader.id}` : "no leader");
-    if (leader && flashing) note.append(" ", el("span", "newleader", "new"));
-    row.append(el("span", "name", name), note);
-    cells.push(row);
-    for (const id of ids) {
-      const state = data.brokers[id];
-      cells.push(copyCell(state && state.partitions[name], brokerStatus(id, data), leader, leader && leader.id === id, flashing));
-    }
-  }
-  rows.replaceChildren(...cells);
+  renderCluster(data, ids, leaders);
+  renderProducers(data);
+  renderChecks(data);
+  renderFeeds(data);
 }
 
 // `force` redraws even while paused, so a button press shows its result.
