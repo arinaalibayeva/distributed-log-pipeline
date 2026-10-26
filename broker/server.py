@@ -9,6 +9,7 @@ Endpoints:
     GET  /partitions/{name}/read        committed lines from an offset (leader only)
     POST /partitions/{name}/replicate   entries copied from the leader (followers only)
     POST /partitions/{name}/takeover    another broker asks to take over the partition
+    GET  /partitions/{name}/fingerprint hash of the committed lines, for comparing copies
     GET  /state                         summary of every partition, for the dashboard
     GET  /admin/chaos                   which messages to other brokers are being lost
     POST /admin/chaos                   lose messages to some brokers, or a share of all (see chaos.py)
@@ -171,6 +172,10 @@ def create_app(broker_id, brokers=config.BROKERS, interval=0.2, batch=500, ack_t
         if request.candidate not in node.peers:
             raise HTTPException(status_code=400, detail=f"unknown broker {request.candidate}")
         return node.grant(name, request.candidate, request.epoch, request.commit_index, request.dry_run)
+
+    @app.get("/partitions/{name}/fingerprint")
+    async def fingerprint(name: str, upto: int = Query(ge=-1)):
+        return node.fingerprint(name, upto)
 
     @app.get("/state")
     async def state():
