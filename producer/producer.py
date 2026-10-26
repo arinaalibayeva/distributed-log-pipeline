@@ -8,13 +8,20 @@ Each line gets a msg_id the moment it is created, and that ID is reused on
 every retry, so a line resent after a lost ack is stored only once. Lines wait
 in a buffer until a leader acks them, oldest first, so they reach the
 partition in the order the service produced them.
+
+The producer reports how it's doing to the dashboard through a small file
+(see ProducerFiles), and takes commands back the same way: pause, resume, or
+send a burst of errors so an alert can be shown on demand.
 """
 
 import argparse
+import json
+import os
 import random
 import time
 import uuid
 from collections import deque
+from pathlib import Path
 
 from broker import config
 from broker.client import ClusterClient, NoLeaderAvailable
@@ -59,6 +66,10 @@ class LineGenerator:
         level = self.rng.choices(["INFO", "WARN", "ERROR"], weights=[85, 13, 2])[0]
         return [self.make_line(level)]
 
+    def burst(self, count=5):
+        """Return `count` ERROR lines at once, enough to set off an alert."""
+        return [self.make_line("ERROR") for _ in range(count)]
+
     def make_line(self, level):
         text = self.rng.choice(MESSAGES[self.service][level]).format(n=self.rng.randint(1, 999))
         return {
@@ -99,21 +110,69 @@ class Producer:
         return True
 
 
+class ProducerFiles:
+    """The files a producer shares with the dashboard.
+
+    The producer writes its status to <directory>/<service>.json and reads
+    commands from <directory>/<service>.control.json, which the dashboard
+    writes: {"paused": true/false, "burst": n}. `burst` is a counter; each
+    time it goes up, the producer sends one burst of errors.
+    """
+
+    def __init__(self, directory, service):
+        self.directory = Path(directory)
+        self.directory.mkdir(parents=True, exist_ok=True)
+        self.status_path = self.directory / f"{service}.json"
+        self.control_path = self.directory / f"{service}.control.json"
+
+    def write_status(self, status):
+        # Write to a temporary file and rename it, so the dashboard never
+        # reads a half-written file.
+        tmp = self.status_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps({**status, "updated": time.time()}))
+        os.replace(tmp, self.status_path)
+
+    def read_control(self):
+        try:
+            control = json.loads(self.control_path.read_text())
+        except (OSError, ValueError):
+            control = {}
+        return {"paused": bool(control.get("paused", False)), "burst": int(control.get("burst", 0))}
+
+
 def main():
     parser = argparse.ArgumentParser(description="Simulate one service sending log lines.")
     parser.add_argument("service", choices=config.PARTITIONS)
     parser.add_argument("--rate", type=float, default=5.0, help="lines per second (default 5)")
+    parser.add_argument("--dir", default="data/producers", help="where to share status with the dashboard")
     args = parser.parse_args()
 
     generator = LineGenerator(args.service)
     producer = Producer(args.service, ClusterClient())
+    files = ProducerFiles(args.dir, args.service)
+    bursts_done = files.read_control()["burst"]
     interval = 1.0 / args.rate
     last_report = time.monotonic()
     print(f"{args.service} producer sending {args.rate:g} lines/s", flush=True)
     try:
         while True:
-            producer.add(generator.next_lines())
-            if not producer.flush():
+            control = files.read_control()
+            if control["burst"] > bursts_done:
+                bursts_done = control["burst"]
+                producer.add(generator.burst())
+                print(f"{args.service}: sending a burst of errors", flush=True)
+            if not control["paused"]:
+                producer.add(generator.next_lines())
+            flushed = producer.flush()
+            files.write_status({
+                "service": args.service,
+                "acked": producer.acked,
+                "waiting": len(producer.pending),
+                "leader": producer.client.leader[args.service],
+                "paused": control["paused"],
+                "rate": args.rate,
+            })
+            if not flushed:
                 time.sleep(0.5)  # no leader reachable; back off, keep buffering
             if time.monotonic() - last_report >= 5:
                 leader = producer.client.leader[args.service]
