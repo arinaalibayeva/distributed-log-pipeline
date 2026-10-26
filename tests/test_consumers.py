@@ -3,7 +3,7 @@ import json
 import pytest
 
 from conftest import make_line, send
-from consumers.alert_consumer import AlertConsumer, format_alert
+from consumers.alert_consumer import AlertConsumer, format_alert, record_alert
 from consumers.archive import Archive
 from consumers.consumer import Consumer
 
@@ -92,3 +92,12 @@ def test_archive_resumes_where_it_left_off(cluster, writer, tmp_path):
     assert restarted.poll() == 1
     ids = [json.loads(row)["line"]["msg_id"] for row in restarted.path("login").read_text().splitlines()]
     assert ids == ["login-0", "login-1", "login-2", "login-3"]
+
+
+def test_alerts_are_recorded_for_the_dashboard(tmp_path):
+    path = tmp_path / "alerts.jsonl"
+    record_alert(path, {"service": "login", "count": 3, "start": 100.0, "end": 102.0})
+    record_alert(path, {"service": "upload", "count": 4, "start": 200.0, "end": 201.0})
+    alerts = [json.loads(line) for line in path.read_text().splitlines()]
+    assert [(a["service"], a["count"]) for a in alerts] == [("login", 3), ("upload", 4)]
+    assert all("detected" in a for a in alerts)
