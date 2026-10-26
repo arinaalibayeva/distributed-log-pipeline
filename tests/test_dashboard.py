@@ -123,3 +123,70 @@ def test_reconnect_undoes_one_cut_off_and_keeps_the_rest(cluster):
         2: {"blocked": [3], "drop_rate": 0.1},
         3: {"blocked": [1, 2], "drop_rate": 0.1},
     }
+
+
+def test_producers_and_alerts_come_from_their_files(tmp_path):
+    from consumers.alert_consumer import record_alert
+    from producer.producer import ProducerFiles
+
+    ProducerFiles(tmp_path / "producers", "login").write_status({"service": "login", "acked": 7, "waiting": 2})
+    record_alert(tmp_path / "alerts.jsonl", {"service": "login", "count": 3, "start": 1.0, "end": 2.0})
+    record_alert(tmp_path / "alerts.jsonl", {"service": "search", "count": 5, "start": 3.0, "end": 3.5})
+    with TestClient(create_app(brokers={}, data_dir=tmp_path)) as client:
+        data = client.get("/cluster").json()
+    assert data["producers"]["login"]["acked"] == 7
+    assert data["producers"]["login"]["stale"] is False
+    assert data["producers"]["search"] is None
+    assert [a["service"] for a in data["alerts"]] == ["search", "login"]  # newest first
+
+
+def test_producer_buttons_write_commands_and_show_in_the_timeline(tmp_path):
+    from producer.producer import ProducerFiles
+
+    with TestClient(create_app(brokers={}, data_dir=tmp_path)) as client:
+        assert client.post("/producers/login/burst").json() == {"service": "login", "paused": False, "burst": 1}
+        client.post("/producers/login/burst")
+        assert client.post("/producers/login/pause").json()["paused"] is True
+        assert client.post("/producers/billing/pause").status_code == 404
+        events = [e["text"] for e in client.get("/cluster").json()["events"]]
+        assert client.post("/producers/login/resume").json() == {"service": "login", "paused": False, "burst": 2}
+    assert ProducerFiles(tmp_path / "producers", "login").read_control() == {"paused": False, "burst": 2}
+    assert events == ["paused the login producer", "error burst on login", "error burst on login"]
+
+
+def test_watcher_records_events_and_checks_the_copies(cluster, tmp_path):
+    for n in range(5):
+        send(cluster.client(), make_line(n))
+    app = create_app(brokers=cluster.brokers, data_dir=tmp_path, watch_every=0.05, check_every=0.05)
+    with TestClient(app) as client:
+        def checked():
+            checks = client.get("/cluster").json()["checks"]
+            return (checks and all(c and c["compared"] == [1, 2, 3] for c in checks["partitions"].values())
+                    and checks["partitions"]["login"]["upto"] == 4 and checks)
+        checks = wait_until(checked, message="all five lines to be compared on every copy")
+        assert all(c["agree"] and c["unique"] for c in checks["partitions"].values())
+
+        cluster.stop(1)
+        wait_until(lambda: any(e["text"] == "broker 1 stopped" for e in client.get("/cluster").json()["events"]),
+                   message="the stop to be noticed")
+        wait_until(lambda: any(e["text"].startswith("broker 2 became login leader")
+                               for e in client.get("/cluster").json()["events"]),
+                   message="the takeover to be noticed")
+        events = [e["text"] for e in client.get("/cluster").json()["events"]][::-1]
+    assert events[:3] == ["broker 1 became login leader (epoch 1)",
+                          "broker 2 became search leader (epoch 1)",
+                          "broker 3 became upload leader (epoch 1)"]
+
+
+def test_check_notices_copies_that_disagree(cluster, tmp_path):
+    for n in range(3):
+        send(cluster.client(), make_line(n))
+    wait_until(lambda: all(cluster.node(b).partitions["login"].commit_index == 2 for b in (1, 2, 3)),
+               message="every copy to commit")
+    # Tamper with one committed line on broker 3, as a bug might.
+    cluster.node(3).partitions["login"].entries[1]["line"]["msg_id"] = "tampered"
+    app = create_app(brokers=cluster.brokers, data_dir=tmp_path, watch_every=0.05, check_every=0.05)
+    with TestClient(app) as client:
+        check = wait_until(lambda: (client.get("/cluster").json()["checks"] or {}).get("partitions", {}).get("login"),
+                           message="a check")
+    assert check["agree"] is False
