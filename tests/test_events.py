@@ -91,8 +91,8 @@ def test_added_events_come_back_newest_first():
     times = iter([1.0, 2.0])
     log = EventLog(PARTITIONS, clock=lambda: next(times))
     log.add("action", "killed broker 1")
-    log.add("alert", "ALERT login")
+    log.add("leader", "broker 2 became login leader (epoch 2)")
     assert log.recent() == [
-        {"time": 2.0, "kind": "alert", "text": "ALERT login"},
+        {"time": 2.0, "kind": "leader", "text": "broker 2 became login leader (epoch 2)"},
         {"time": 1.0, "kind": "action", "text": "killed broker 1"},
     ]

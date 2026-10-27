@@ -4,8 +4,8 @@ The dashboard server looks at every broker's state about once a second and
 passes it to EventLog.observe(), which compares it with the previous look
 and records what changed: a broker stopping or coming back, a partition
 getting a new leader or losing it, and a copy catching up after falling
-behind. The server also records its own actions (kill, cut off, ...) and new
-alerts with EventLog.add().
+behind. The server also records its own actions (kill, cut off, ...) with
+EventLog.add().
 """
 
 import time
@@ -39,7 +39,7 @@ class EventLog:
         self.behind = set()  # (partition, broker ID) copies that fell behind and haven't caught up
 
     def add(self, kind, text):
-        """Record an event. `kind` is "action", "down", "up", "leader", "sync" or "alert"."""
+        """Record an event. `kind` is "action", "down", "up", "leader" or "sync"."""
         self.events.append({"time": self.clock(), "kind": kind, "text": text})
 
     def recent(self, count=50):

@@ -95,20 +95,13 @@ def test_producer_finds_leader_from_wrong_guess(cluster):
     assert msg_ids(cluster, 3, "upload") == ["upload-0"]
 
 
-def test_burst_is_enough_errors_for_an_alert():
-    lines = LineGenerator("search", rng=random.Random(1), clock=lambda: 7.0).burst()
-    assert len(lines) == 5
-    assert {line["level"] for line in lines} == {"ERROR"}
-    assert len({line["msg_id"] for line in lines}) == 5
-
-
 def test_producer_files_share_status_and_commands(tmp_path):
     files = ProducerFiles(tmp_path, "login")
-    assert files.read_control() == {"paused": False, "burst": 0}
+    assert files.read_control() == {"paused": False}
     files.write_status({"service": "login", "acked": 3, "waiting": 1})
     status = json.loads(files.status_path.read_text())
     assert (status["acked"], status["waiting"]) == (3, 1) and "updated" in status
-    files.control_path.write_text(json.dumps({"paused": True, "burst": 2}))
-    assert files.read_control() == {"paused": True, "burst": 2}
+    files.control_path.write_text(json.dumps({"paused": True}))
+    assert files.read_control() == {"paused": True}
     files.control_path.write_text("{half written")
-    assert files.read_control() == {"paused": False, "burst": 0}
+    assert files.read_control() == {"paused": False}

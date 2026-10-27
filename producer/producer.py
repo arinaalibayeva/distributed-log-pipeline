@@ -10,8 +10,7 @@ in a buffer until a leader acks them, oldest first, so they reach the
 partition in the order the service produced them.
 
 The producer reports how it's doing to the dashboard through a small file
-(see ProducerFiles), and takes commands back the same way: pause, resume, or
-send a burst of errors so an alert can be shown on demand.
+(see ProducerFiles), and takes commands back the same way: pause and resume.
 """
 
 import argparse
@@ -66,10 +65,6 @@ class LineGenerator:
         level = self.rng.choices(["INFO", "WARN", "ERROR"], weights=[85, 13, 2])[0]
         return [self.make_line(level)]
 
-    def burst(self, count=5):
-        """Return `count` ERROR lines at once, enough to set off an alert."""
-        return [self.make_line("ERROR") for _ in range(count)]
-
     def make_line(self, level):
         text = self.rng.choice(MESSAGES[self.service][level]).format(n=self.rng.randint(1, 999))
         return {
@@ -115,8 +110,7 @@ class ProducerFiles:
 
     The producer writes its status to <directory>/<service>.json and reads
     commands from <directory>/<service>.control.json, which the dashboard
-    writes: {"paused": true/false, "burst": n}. `burst` is a counter; each
-    time it goes up, the producer sends one burst of errors.
+    writes: {"paused": true/false}.
     """
 
     def __init__(self, directory, service):
@@ -137,7 +131,7 @@ class ProducerFiles:
             control = json.loads(self.control_path.read_text())
         except (OSError, ValueError):
             control = {}
-        return {"paused": bool(control.get("paused", False)), "burst": int(control.get("burst", 0))}
+        return {"paused": bool(control.get("paused", False))}
 
 
 def main():
@@ -150,17 +144,12 @@ def main():
     generator = LineGenerator(args.service)
     producer = Producer(args.service, ClusterClient())
     files = ProducerFiles(args.dir, args.service)
-    bursts_done = files.read_control()["burst"]
     interval = 1.0 / args.rate
     last_report = time.monotonic()
     print(f"{args.service} producer sending {args.rate:g} lines/s", flush=True)
     try:
         while True:
             control = files.read_control()
-            if control["burst"] > bursts_done:
-                bursts_done = control["burst"]
-                producer.add(generator.burst())
-                print(f"{args.service}: sending a burst of errors", flush=True)
             if not control["paused"]:
                 producer.add(generator.next_lines())
             flushed = producer.flush()
