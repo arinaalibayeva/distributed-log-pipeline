@@ -21,7 +21,6 @@ in the takeover has it. A leader steps down when it learns of a newer epoch
 or can't reach a majority, and drops the lines it never committed.
 """
 
-import hashlib
 import time
 
 from broker import config
@@ -347,24 +346,6 @@ class BrokerNode:
         now = _now(now)
         recent = sum(now - t < self.leader_timeout for t in self.last_contact[name].values())
         return 1 + recent < self.majority
-
-    def fingerprint(self, name, upto):
-        """Summarize this copy of `name`, so copies can be compared cheaply.
-
-        Returns a hash of the msg_ids of the committed entries up to offset
-        `upto` (capped at the commit index), and whether every stored line
-        has a different msg_id. Two copies with the same hash up to the same
-        offset hold the same message IDs in the same order; message contents
-        are not compared.
-        """
-        partition = self._partition(name)
-        upto = min(upto, partition.commit_index)
-        ids = "\n".join(entry["line"]["msg_id"] for entry in partition.entries[:upto + 1])
-        return {
-            "upto": upto,
-            "sha": hashlib.sha256(ids.encode()).hexdigest(),
-            "unique": len(partition.msg_ids) == len(partition),
-        }
 
     def state(self, tail=5):
         """Return a summary of every partition, for the dashboard."""

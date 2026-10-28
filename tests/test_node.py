@@ -232,21 +232,3 @@ def test_follower_with_a_different_tail_asks_to_resend_after_its_commit():
     entries = [{"offset": n, "epoch": 0, "line": make_line(n)} for n in range(4)]
     follower.replicate("login", 1, 0, 0, entries, 0)
     assert follower.replicate("login", 1, 1, 4, [], 0, "login-3", 1) == (False, 1)
-
-
-def test_fingerprint_matches_for_copies_with_the_same_committed_lines():
-    leader, follower = make_node(1), make_node(2)
-    for n in range(4):
-        leader.append("login", make_line(n))
-    m = leader.message_for("login", 2, batch=10)
-    follower.replicate("login", 1, 0, 0, m["entries"], 2)
-    leader.record_follower("login", 2, 4)
-    assert leader.fingerprint("login", 2) == follower.fingerprint("login", 2)
-    assert leader.fingerprint("login", 2)["upto"] == 2
-    assert leader.fingerprint("login", 99)["upto"] == 3  # capped at the commit index
-    assert leader.fingerprint("login", 1)["sha"] != leader.fingerprint("login", 2)["sha"]
-    assert leader.fingerprint("login", 2)["unique"] is True
-
-
-def test_fingerprint_of_an_empty_copy():
-    assert make_node(2).fingerprint("login", 5) == make_node(3).fingerprint("login", -1)
