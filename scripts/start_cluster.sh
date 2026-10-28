@@ -17,9 +17,9 @@ for port in 8000 8001 8002 8003; do
     fi
 done
 
-# Brokers start empty, so archive files, logs, alerts and producer status
-# from an earlier run no longer match.
-rm -rf data/archive data/logs data/producers data/alerts.jsonl
+# Brokers start empty, so archive files, logs and producer status from an
+# earlier run no longer match.
+rm -rf data/archive data/logs data/producers
 mkdir -p data/logs
 
 pids=()

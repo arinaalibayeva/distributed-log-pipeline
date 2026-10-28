@@ -13,7 +13,7 @@ Working now:
 - **Producers:** buffer each line and retry until the leader acknowledges it. Retries reuse the `msg_id`, so a line is never stored twice.
 - **Alert consumer:** prints an alert when one service logs 3 errors within 5 seconds, using each line's own timestamp.
 - **Archive consumer:** writes every line to a file per partition.
-- **Dashboard:** a web page showing every broker's copy of each partition live, the producers (lines acknowledged and waiting), alerts, a timeline of what happened, and a regular check that all copies agree. Buttons kill and restart brokers, cut a broker off from the others, lose a share of the messages between brokers, pause producers and trigger an error burst.
+- **Dashboard:** a web page showing every broker's copy of each partition live, the producers (lines acknowledged and waiting), and a timeline of cluster events. Buttons kill and restart brokers, cut a broker off from the others, lose a share of the messages between brokers, and pause producers.
 - **Failure controls:** the same failures from the terminal with `scripts/chaos.py`.
 
 ## Running it
@@ -38,10 +38,9 @@ Things to try on the dashboard:
 - **Kill** a leader: within about 2 seconds another broker takes over, the blue border moves and the epoch goes up.
 - **Cut off** a leader: it stops committing and steps down, and the other two brokers carry on. **Heal network** and it rejoins as a follower. Producers can still reach a cut-off broker, so this also shows the cluster refusing to acknowledge lines it can't store on a majority.
 - Set the drop rate to **30%**: brokers lose that share of the messages they send each other, yet every copy stays the same.
-- Press **Error burst** on a producer: it sends 5 errors at once and an alert appears within a second or two.
 - Kill one broker and cut off another: no partition has a majority, so the producers show lines **waiting to retry** instead of losing them. Heal and restart, and the waiting lines go through.
 
-The **What happened** panel keeps a timeline of every step, and the **Correctness check** compares committed message IDs and their order among available copies close to the leader every few seconds. It does not compare message contents or prove that every acknowledged line survived.
+Alerts print in the terminal where the cluster runs.
 
 The same controls from a terminal:
 
