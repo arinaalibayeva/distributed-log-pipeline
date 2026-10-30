@@ -177,9 +177,13 @@ def create_app(brokers=config.BROKERS, processes=None, data_dir="data", watch_ev
         replies = await asyncio.gather(*(admin(b, path, body_for(b)) for b in ids))
         return {"brokers": dict(zip(ids, replies))}
 
-    def known_broker(broker_id):
+    def check_broker(broker_id):
         if broker_id not in brokers:
             raise HTTPException(status_code=404, detail=f"no broker {broker_id}")
+
+    def known_broker(broker_id):
+        """A broker this dashboard started, so it can kill and restart it."""
+        check_broker(broker_id)
         if processes is None:
             raise HTTPException(status_code=409, detail="this dashboard didn't start the brokers")
 
@@ -227,10 +231,6 @@ def create_app(brokers=config.BROKERS, processes=None, data_dir="data", watch_ev
         check_service(service)
         events.add("action", f"resumed the {service} producer")
         return control_producer(service, lambda c: c.update(paused=False))
-
-    def check_broker(broker_id):
-        if broker_id not in brokers:
-            raise HTTPException(status_code=404, detail=f"no broker {broker_id}")
 
     async def apply_cut_offs():
         """Set every broker's blocked list from the brokers that were cut off.
