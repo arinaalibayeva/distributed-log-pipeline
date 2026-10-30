@@ -61,8 +61,6 @@
   .head .title { display: flex; justify-content: space-between; align-items: center; font-size: 17px; font-weight: 700; }
   .pill { font-size: 13px; font-weight: 700; }
   .pill.up { color: var(--ok); } .pill.cutoff, .pill.unreachable { color: var(--warn); } .pill.down { color: var(--bad); }
-  .leads { font-size: 13px; color: var(--muted); min-height: 1.3em; }
-  .leads b { color: var(--leader); }
   .rowname { display: flex; flex-direction: column; justify-content: center; gap: 4px; }
   .rowname .name { font-size: 17px; font-weight: 700; }
   .rowname .note { font-size: 13px; color: var(--muted); }
@@ -116,7 +114,6 @@
   .seg button.active, .seg button.active:hover { background: var(--text); color: var(--bg); border-color: var(--text); }
   .network { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px 16px; font-size: 14px; }
   .network .label { font-weight: 700; font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
-  .trouble { color: var(--warn); font-weight: 600; }
 
   @media (max-width: 1200px), (max-height: 760px) {
     .app { height: auto; min-height: 100vh; }
@@ -143,7 +140,6 @@
     <span class="health good" id="health">healthy</span>
     <span class="feedback" id="feedback"></span>
     <button id="pause">Pause view</button>
-    <span class="muted" id="status">connecting…</span>
   </div>
   <div class="paused-banner" id="paused" hidden>View paused: the cluster keeps running. Press Resume to see the live state.</div>
 
@@ -152,7 +148,6 @@
     <span>Lose messages between brokers:</span>
     <div class="seg" id="drop"></div>
     <button class="restart" id="heal">Heal network</button>
-    <span class="muted" id="netstatus"></span>
   </section>
 
   <div class="layout">
@@ -179,7 +174,6 @@
 <script>
 const heads = document.getElementById("heads");
 const rows = document.getElementById("rows");
-const statusText = document.getElementById("status");
 const feedback = document.getElementById("feedback");
 const TAIL = 4;
 const DROP_RATES = [0, 0.1, 0.3, 0.5];
@@ -280,7 +274,6 @@ function brokerHeader(id) {
   const title = el("div", "title");
   const pill = el("span", "pill");
   title.append(el("span", "", `Broker ${id}`), pill);
-  const leads = el("div", "leads");
   const kill = el("button", "kill", "Kill");
   kill.onclick = () => act(kill, `/brokers/${id}/kill`, null, `Killed broker ${id}`);
   const restart = el("button", "restart", "Restart");
@@ -292,9 +285,9 @@ function brokerHeader(id) {
     : act(link, `/chaos/cut-off/${id}`, null, `Cut off broker ${id}`);
   const buttons = el("div", "buttons");
   buttons.append(kill, restart, link);
-  head.append(title, leads, buttons);
+  head.append(title, buttons);
   heads.append(head);
-  return { pill, leads, kill, restart, link };
+  return { pill, kill, restart, link };
 }
 
 function isCutOff(id, data) {
@@ -311,17 +304,12 @@ function brokerStatus(id, data) {
 
 const STATUS_CLASS = { "up": "up", "cut off": "cutoff", "unreachable": "unreachable", "stopped": "down", "down": "down" };
 
-function updateHeader(id, data, leaders) {
+function updateHeader(id, data) {
   const header = headers[id] || (headers[id] = brokerHeader(id));
   const state = data.brokers[id];
   const status = brokerStatus(id, data);
   header.pill.className = "pill " + STATUS_CLASS[status];
   header.pill.textContent = status;
-
-  const led = data.partitions.filter(name => leaders[name] && leaders[name].id === id);
-  header.leads.replaceChildren(...(led.length
-    ? ["leads ", ...led.flatMap((name, i) => [i ? ", " : "", el("b", "", name)])]
-    : [state ? "leads nothing" : ""]));
 
   const running = data.processes ? data.processes[id] === "running" : !!state;
   header.kill.hidden = header.restart.hidden = !data.controls;
@@ -418,7 +406,7 @@ function renderCluster(data, ids, leaders) {
 
 // ----- Network -----
 
-// Returns a list of current problems, for the network panel and the top bar.
+// Returns a list of current network problems, for the top bar.
 function updateNetwork(data, ids) {
   const up = ids.filter(id => data.brokers[id]);
   const rate = Math.max(0, ...up.map(id => data.brokers[id].chaos.drop_rate));
@@ -426,9 +414,6 @@ function updateNetwork(data, ids) {
   const trouble = [];
   if (rate) trouble.push(`losing ${Math.round(rate * 100)}% of messages`);
   if (data.cut_off.length) trouble.push(`broker ${data.cut_off.join(", ")} cut off`);
-  const status = document.getElementById("netstatus");
-  status.textContent = trouble.join(" · ");  // empty while every link works
-  status.className = trouble.length ? "trouble" : "muted";
   return trouble;
 }
 
@@ -491,7 +476,7 @@ function render(data) {
   const ids = Object.keys(data.brokers);
   const leaders = Object.fromEntries(data.partitions.map(name => [name, leaderOf(name, data.brokers)]));
   noteLeaders(data, leaders);
-  for (const id of ids) updateHeader(id, data, leaders);
+  for (const id of ids) updateHeader(id, data);
   const trouble = updateNetwork(data, ids);
 
   const down = ids.filter(id => !data.brokers[id]);
@@ -513,9 +498,10 @@ async function refresh(force = false) {
   try {
     const response = await fetch("/cluster");
     render(await response.json());
-    statusText.textContent = (paused ? "paused at " : "updated ") + new Date().toLocaleTimeString();
   } catch (error) {
-    statusText.textContent = "dashboard server not reachable";
+    const health = document.getElementById("health");
+    health.textContent = "dashboard server not reachable";
+    health.className = "health trouble";
   }
 }
 
