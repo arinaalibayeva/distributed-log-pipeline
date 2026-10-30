@@ -7,6 +7,3 @@ venv/
 .vscode/
 data/
 *.log
-
-# Personal planning notes (local only)
-docs/PLAN.md
