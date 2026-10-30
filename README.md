@@ -1,22 +1,20 @@
 # Distributed Log Pipeline
 
-A small Kafka-style log pipeline in Python. Three simulated services (`login`, `search`, `upload`) send log lines to a cluster of three brokers, and consumers read the stored lines to raise alerts and archive them.
+A small Kafka-style log pipeline in Python. Three fake services (`login`, `search`, `upload`) send log lines to a cluster of three brokers. Consumers read the stored lines to print alerts and archive them.
 
-## Current state
+## What it does
 
-Working now:
-
-- **Partitions:** append-only logs with offsets, duplicate rejection by `msg_id`, a commit index, epochs and truncation.
-- **Brokers:** three FastAPI servers. Each partition has one leader at a time, and leadership is spread so each broker normally leads one. A request sent to the wrong broker is redirected to the leader.
-- **Replication:** every partition is copied to all three brokers. A line is acknowledged only once 2 of 3 brokers have it, so one broker can fail without losing acknowledged lines. A restarted broker catches up from the leader.
-- **Leader takeover:** if a leader stops sending heartbeats for about 2 seconds, the next broker in the partition's preference order takes over with a higher epoch, after copying any lines it was missing from the other broker. A leader that can't reach a majority steps down and drops the lines it never acknowledged, and brokers ignore messages from an older epoch, so a cut-off leader can't overwrite anything. A restarted broker rejoins as a follower.
-- **Producers:** buffer each line and retry until the leader acknowledges it. Retries reuse the `msg_id`, so a line is never stored twice.
-- **Alert consumer:** prints an alert when one service logs 3 errors within 5 seconds, using each line's own timestamp.
-- **Archive consumer:** writes every line to a file per partition.
-- **Dashboard:** a web page showing every broker's copy of each partition live, the producers (lines acknowledged and waiting), and a timeline of cluster events. Buttons kill and restart brokers, cut a broker off from the others, lose a share of the messages between brokers, and pause producers.
-- **Failure controls:** the same failures from the terminal with `scripts/chaos.py`.
+- Each service has its own partition: an append-only log with offsets.
+- Every partition is copied to all three brokers. A line is only acknowledged once 2 of the 3 brokers have it, so one broker can crash without losing acknowledged lines.
+- Each partition has one leader. If the leader stops sending heartbeats for about 2 seconds, another broker takes over with a higher epoch. A leader that can't reach the others steps down, so an old leader can't overwrite anything.
+- A crashed broker comes back empty and copies what it missed from the leader.
+- Producers keep retrying until a line is acknowledged. Retries reuse the same `msg_id`, so a line is never stored twice.
+- The alert consumer prints an alert when one service logs 3 errors within 5 seconds. The archive consumer writes every line to a file.
+- A dashboard shows the whole cluster live and lets you cause failures with buttons.
 
 ## Running it
+
+Needs Python 3.10 or newer.
 
 ```bash
 python3 -m venv .venv
@@ -26,39 +24,35 @@ pip install -r requirements.txt
 ./scripts/start_cluster.sh   # Ctrl-C stops everything
 ```
 
-Alerts print in the terminal. Process logs go to `data/logs/` and archived lines to `data/archive/`. Each broker's API can be explored at http://127.0.0.1:8001/docs (ports 8001-8003).
+Then open http://127.0.0.1:8000. Give it a couple of seconds to pick the first leaders.
 
-The brokers choose their first leaders in the first couple of seconds; producers hold their lines until then.
+Alerts print in the terminal. Logs go to `data/logs/` and archived lines to `data/archive/`.
 
-Open the dashboard at http://127.0.0.1:8000. Each cell is one broker's copy of a partition: its role and epoch, its length, commit index and last lines. The leader has a blue border and copies that are behind are amber.
+## The dashboard
 
-Things to try on the dashboard:
+Each cell is one broker's copy of a partition. The leader has a blue border and shows its latest lines. Followers show whether they are in sync or how many lines behind they are. On the right you can see the producers and a timeline of what happened.
 
-- **Kill** a follower: the partition keeps committing on the other two brokers. **Restart** brings it back empty, and it catches up.
-- **Kill** a leader: within about 2 seconds another broker takes over, the blue border moves and the epoch goes up.
-- **Cut off** a leader: it stops committing and steps down, and the other two brokers carry on. **Heal network** and it rejoins as a follower. Producers can still reach a cut-off broker, so this also shows the cluster refusing to acknowledge lines it can't store on a majority.
-- Set the drop rate to **30%**: brokers lose that share of the messages they send each other, yet every copy stays the same.
-- Kill one broker and cut off another: no partition has a majority, so the producers show lines **waiting to retry** instead of losing them. Heal and restart, and the waiting lines go through.
+Things to try:
 
-Alerts print in the terminal where the cluster runs.
+- **Kill a follower.** The partition keeps going on the other two. **Restart** it and it catches up.
+- **Kill a leader.** Another broker takes over in about 2 seconds and the epoch goes up.
+- **Cut off a leader.** It steps down and the other two carry on. **Heal network** and it comes back as a follower.
+- **Drop 30%** of the messages between brokers. All copies still end up the same.
+- **Kill one broker and cut off another.** No partition has a majority, so producers show lines waiting instead of losing them. Heal and restart, and they go through.
 
-The same controls from a terminal:
+## From the terminal
+
+The same controls without the dashboard:
 
 ```bash
 python scripts/chaos.py status
-python scripts/chaos.py kill 2          # or: restart 2
+python scripts/chaos.py kill 2        # or: restart 2
 python scripts/chaos.py cut-off 1
 python scripts/chaos.py drop 30%
 python scripts/chaos.py heal
 ```
 
-For a terminal view instead, run this in a second terminal:
-
-```bash
-python scripts/watch.py
-```
-
-It shows every broker's copy of each partition (length and commit index), which broker leads and in which epoch, and how far behind each copy is.
+`python scripts/watch.py` shows the cluster in a second terminal instead of the browser.
 
 ## Tests
 
@@ -66,15 +60,15 @@ It shows every broker's copy of each partition (length and commit index), which 
 pytest
 ```
 
-The tests run three real brokers in the test process. `tests/test_failures.py` and `tests/test_chaos.py` cut brokers off from each other, lose 30% of the messages between them, and crash leaders under constant writes, then check that every acknowledged line is stored exactly once and all copies agree.
+The tests start three real brokers, cut them off from each other, drop messages and crash leaders while writing, then check that every acknowledged line is stored exactly once and all copies match.
 
 ## Layout
 
 ```
-broker/      partition log, broker logic, replication, leader takeover, failure injection, HTTP server, cluster client, config
-producer/    simulated service that sends log lines
-consumers/   alert detector, alert consumer, archive consumer
-dashboard/   web page and the server that runs it (it also starts the brokers)
-scripts/     start_cluster.sh, watch.py, chaos.py
-tests/       unit tests and integration tests against three real brokers
+broker/      partition log, replication, leader takeover, failure injection, server
+producer/    fake service that sends log lines
+consumers/   alert and archive consumers
+dashboard/   the web page and its server (it also starts the brokers)
+scripts/     start_cluster.sh, chaos.py, watch.py
+tests/       unit tests and tests against three real brokers
 ```
